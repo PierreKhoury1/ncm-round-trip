@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+paper/preview/
+paper/arxiv/
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.blg
+paper/*.bbl
+paper/*.synctex*
+paper/figs/*.png
+paper/ncm-round-trip-arxiv.zip
