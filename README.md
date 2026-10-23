@@ -21,8 +21,10 @@ On the released checkpoints, with the authors' own sampler, token picker and eva
 Unigram entropy stays the same or rises. At matched corpus diversity, refinement is 10-14% better than lowering the
 temperature on TinyStories, and 15-22% better with a hotter draft (`d1.1+r6`: -12% gen-PPL while *more* diverse than
 the released sampler on every measure). Ablations: regenerating without re-encoding gives nothing; re-quantizing the
-latent instead of the text gives about half. Costs: RT6 uses 17 generator passes instead of 11. Details, controls and
-negative results are in the paper (`paper/main.pdf`).
+latent instead of the text gives about half. Costs: RT6 uses 17 generator passes instead of 11, 1.9x the wall-clock of the released sampler on an RTX 4090
+(the fine levels are the long passes). How non-canonical a draft is (share of its coarse codes the re-encode
+changes) predicts its quality on TinyStories (Spearman 0.37 with Gen. PPL; weak on LM1B, where every draft is
+rewritten 85-97%); selecting drafts by that signal only trades diversity for perplexity. Details, controls and negative results are in the paper (`paper/main.pdf`).
 
 ## Use
 
@@ -42,8 +44,9 @@ python round_trip/analyze_skip.py --in round_trip/runs/ts_s1.pkl --ref gpt2-larg
 
 Variant names: `full` is the released sampler; `r<k>` one round restarting at level k; `r<k>x<n>` n rounds;
 `r4+r8` rounds in sequence; `t<T>@<k>` temperature T for levels >= k; `d<T>` draft temperature; `n<k>` and `q<k>`
-are the ablations (no re-encode; latent re-quantization). LM1B uses `score_flm.py` (the authors' FLM protocol),
-XSum/WMT14 use `--split test` and `score_cond.py`.
+are the ablations (no re-encode; latent re-quantization); `b<N>` keeps the most canonical of N drafts. Every
+variant also records per-sample non-canonicality (`canon`) and wall-clock (`seconds`, split in `time`). LM1B uses
+`score_flm.py` (the authors' FLM protocol), XSum/WMT14 use `--split test` and `score_cond.py`.
 
 ## Files
 
@@ -53,6 +56,7 @@ XSum/WMT14 use `--split test` and `score_cond.py`.
 | `analyze_skip.py`, `score_flm.py`, `score_cond.py` | scoring: TinyStories, LM1B (FLM protocol), XSum/WMT14 |
 | `roundtrip_check.py` | does re-encode + decode reproduce generated text? (CPU, tokenizer only) |
 | `judge_pairs.py`, `score_mauve.py` | blind pairwise LLM judge (both orders) and MAUVE against human text |
+| `score_ppl.py`, `canon_analyze.py` | any HF causal LM as scorer with per-sample perplexities (second scorer); non-canonicality vs quality |
 | `sudoku_search.py` | verifier-guided test-time search on Sudoku (fresh resampling vs round-trip retries) |
 | `var_rt.py` | the round trip on the VAR image model (ImageNet 256) with FID screening |
 | `train_dropout.py`, `train_joint.py`, `soup.py` | the training-side experiments (negative results) |

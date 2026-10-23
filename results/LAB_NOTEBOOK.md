@@ -479,3 +479,52 @@ r6 9.299 | r5 9.354 | q7 9.260 | n7 9.220 (= base distribution, so noise ~0.1) |
 The phenomenon (non-canonical sampled codes) generalises; the benefit of the round trip does not (pixel round trip is
 lossy, and VAR conditions each scale on all previous scales). 50k confirmation skipped (Pierre: write up).
 Box: vast ssh proxy refused; used direct ssh (public_ipaddr + 22/tcp HostPort).
+
+
+## 18. Run 19: referee shield (timing, per-sample canonicality, best-of-N, second scorer) — 23 Oct 15:00-18:30, $0.69
+
+Box 57387338 (RTX 4090, Utah). refine_eval.py now records per variant: wall-clock `seconds` with a CUDA-synchronised
+split `time` = {gen, enc, dec}; per-sample `canon` = share of the draft's level 0-5 codes that re-encoding changes
+(non-canonicality); `draft_texts`/`draft_raw` (the draft before any round); new variant `b<N>` = keep, per sample,
+the most canonical of N drafts. New scripts: score_ppl.py (any HF causal LM, bf16, per-sample PPL, text or FLM
+protocol), canon_analyze.py (Spearman + quintiles).
+
+TIMING (256 TinyStories, batch 128 / 128 LM1B-large, batch 32; second run after warm-up):
+TS: released 1.4 s (5.6 ms/story) | r6 2.7 s (1.9x for 1.55x passes) | d1.1+r6 2.7 s | r5x2 4.1 s (2.9x) |
+r3+r6+r9 5.5 s (3.8x). LM1B-large: released 4.5 s (35 ms/seq) | r6 8.3 s (1.8x) | r6x2 12.5 s (2.8x).
+Tokenizer encode+decode+pick = ~10% of the total. Wall-clock tracks FLOPs (fine levels are the long passes), not NFE.
+
+CANONICALITY PREDICTS QUALITY (TinyStories, 3 seeds x 256, GPT-2 Large per story):
+released sampler: Spearman(canon, log PPL) = +0.37 +- 0.12 (p < 1e-4 every seed); quintiles by canon: 13.6 / 14.4 /
+15.0 / 17.7 / 20.1 (least -> most rewritten; seed-3 numbers 12.9..22.3). r6: improves 92% of stories, rho(canon, gain)
+= +0.28 +- 0.004; per quintile draft -> refined: 13.6->11.9, 15.1->12.6, 16.0->13.3, 17.8->14.1, 20.1->15.1 (87-96%
+improved). => the more the tokenizer rewrites a draft's coarse codes, the worse the draft and the more RT helps it.
+
+BEST-OF-N BY CANONICALITY (TS seeds 1-3): b4 14.52 (-10.1%, canon 0.687) | b8 14.08 (-12.9%, 0.652) | b4+r6 12.07
+(-25.3%) | b8+r6 11.90 (-26.3%) | b8+r5x2 10.98 (-32.0%). BUT diversity falls: dist3 0.749 -> 0.711 (b4) / 0.699
+(b8) / 0.681 (b8+r5x2), xs4 0.162 -> 0.203 / 0.216 / 0.230 => vs the temperature frontier at matched dist3: b4 and b8
++11.7% WORSE, b4+r6 only -4.5% (r6 alone -12.4%), b8+* below the curve's diversity range. LM1B-large: b4 79.69 vs
+80.11 (nothing), b4+r6 61.96 vs r6 62.46 (nothing). => the selector picks the blandest drafts; negative at matched
+diversity. Regenerating the fine levels is what helps; selecting drafts by canonicality is not.
+
+SECOND SCORER Qwen2.5-7B (base, bf16; FLM protocol with the first 128 Qwen tokens for LM1B) on the 24 headline pickles:
+every relative gain replicates within a few points. TS s1-3: released 12.28, r6 10.09 (-17.8% vs -17.3% GPT-2L),
+r5x2 8.67 (-29.4 vs -27.6), d1.1+r6 10.84 (-11.7 vs -12.4). TS s4-6: t0.8 -18.8, r6 -19.1, r5x2 -28.3, r3+r6+r9
+-31.8 (vs -29.5), d1.2+t0.8@6+r5x2 -24.1; twins: d1.3 recipe -21.3 vs its 11-pass twin +12.0 (GPT-2L +10.2); human
+4.70, human+r6 5.54. LM1B small: t0.8 -11.3 (GPT-2L -16.1), r6 -18.4 (-14.8) = the one place the scorers rank t0.8 vs
+r6 differently. LM1B medium: r6 -22.5, r6x2 -31.9 (-28.8). LM1B large: t0.8 -14.7, r6 -22.9 (-22.0); s4-6: r6x2
+-30.4 (-27.1), d1.2+r6x2 -24.3, twin +10.8.
+
+BUG: LM1B canon analysis crashed: LM1B `texts` are '' (dec() cuts at the leading [CLS]) so draft_texts were empty.
+Fixed: draft_raw stored, score_ppl scores it under FLM. Rerun = run_gpu20.sh (box 57395717), results below when in.
+VAST GOTCHA (23 Oct): instances are now created with intended_status=stopped on every host; launch_box.sh issues one
+`vastai start instance` instead of destroying (five boxes were killed as STOPPED-ON-CREATE before this was found).
+Paper: sections 'Non-canonicality predicts quality', 'Selecting drafts by canonicality is a diversity trade',
+'Wall-clock cost', 'A second scorer'; tables canon/bestof/timing/scorer2; 18 pp.
+
+RUN 20 (box 57395717, $0.41; credit $17.35): LM1B-large canonicality, 3 seeds x 256, GPT-2 Large per sequence (FLM):
+released: canon 0.859 (range ~0.65-0.97, i.e. nearly every draft heavily rewritten), rho(canon, log PPL) = +0.10 +- 0.09
+(n.s. per seed); quintile draft PPL 76.4 / 78.1 / 79.8 / 81.5 / 84.7 -> weak trend. r6: improves 88% of sequences,
+rho(canon, gain) +0.09; quintiles draft->refined 76.4->62.0 ... 84.7->65.3. Qwen: b4 +1.4% (worse), b4+r6 -22.8% = r6
+-22.9%. => the per-sample signal is strong where non-canonicality varies across drafts (TinyStories 0.46-0.90), weak
+where it is uniformly high (LM1B). Paper text qualified accordingly ("On TinyStories, ...").

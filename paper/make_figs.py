@@ -28,6 +28,8 @@ def label(v):
             parts.append(rf"{name}$_{{{k}}}$" + (rf"$\times{n}$" if n != "1" else ""))
         elif p[0] == "d":
             extra.append(rf"draft $\tau{{=}}{p[1:]}$")
+        elif p[0] == "b":
+            parts.append(f"best-of-{p[1:]}")
         elif p[0] == "t":
             T, k = p[1:].split("@")
             extra.append(rf"$\tau_{{\geq {k}}}{{=}}{T}$")
@@ -397,10 +399,125 @@ def table_var():
     open(os.path.join(HERE, "tables", "var.tex"), "w").write("\n".join(L) + "\n")
 
 
+def table_timing():
+    T = R.get("timing", {})
+    L = []
+    for key, name, order in (("ts", "TinyStories: 256 stories of 128 tokens, batch 128",
+                              ["full", "t0.8@1", "r6", "d1.1+r6", "r5x2", "r3+r6+r9"]),
+                             ("lm1bl", "LM1B large: 128 sequences of 128 tokens, batch 32", ["full", "r6", "r6x2", "d1.2+r6x2"])):
+        S = T.get(key)
+        if not S:
+            continue
+        S = dict(S)
+        if "t0.8@1" in S and S["t0.8@1"]["seconds"] < S["full"]["seconds"]:
+            S["full"] = S["t0.8@1"]  # same computation; the first variant of a run pays the CUDA warm-up
+        base = S["full"]["seconds"]
+        L.append(f"\\multicolumn{{7}}{{l}}{{\\emph{{{name}}}}} \\\\")
+        for v in order:
+            if v not in S or v == "t0.8@1":
+                continue
+            d = S[v]
+            L.append(f"{label(v)} & {d['nfe']} & {1000 * d['seconds'] / d['n']:.1f} & {d['t_gen']:.2f} & "
+                     f"{d['t_enc'] + d['t_dec']:.2f} & {d['seconds'] / base:.2f}$\\times$ & {d['nfe'] / 11:.2f}$\\times$ \\\\")
+        L.append("\\midrule")
+    if L and L[-1] == "\\midrule":
+        L.pop()
+    open(os.path.join(HERE, "tables", "timing.tex"), "w").write("\n".join(L) + "\n")
+
+
+def table_bestof():
+    L = []
+    S = R.get("p9_canon_ts", {})
+    for v in ("full", "t0.8@1", "r6", "r5x2", "d1.1+r6", "b4", "b8", "b4+r6", "b8+r6", "b8+r5x2"):
+        if v not in S or "ppl_mean" not in S[v]:
+            continue
+        d = S[v]
+        if v in ("r6", "b4"):
+            L.append("\\midrule")
+        sd = f"{d['ppl_mean']:.2f}{{\\scriptsize$\\pm${d['ppl_sd']:.2f}}}"
+        fr = pct(d.get("vs_temp_dist3")) if not (v == "full" or (v.startswith("t") and v.endswith("@1"))) else "--"
+        canon = f"{d['canon_mean']:.3f}" if d.get("canon_mean") is not None else "--"
+        L.append(f"{label(v)} & {d['nfe']} & {sd} & {pct(d.get('vs_full')) if v != 'full' else '--'} & {canon} & "
+                 f"{d['dist3_mean']:.3f} & {d['xsamp4_mean']:.3f} & {fr} \\\\")
+    M = R.get("p9_canon_lm1bl", {})
+    if any(v in M and "ppl_mean" in M[v] for v in ("b4", "b4+r6")):
+        L.append("\\midrule")
+        L.append("\\multicolumn{8}{l}{\\emph{LM1B large (FLM protocol; last column against the temperature curve at equal entropy)}} \\\\")
+        for v in ("full", "r6", "b4", "b4+r6"):
+            if v not in M or "ppl_mean" not in M[v]:
+                continue
+            d = M[v]
+            sd = f"{d['ppl_mean']:.2f}{{\\scriptsize$\\pm${d['ppl_sd']:.2f}}}"
+            canon = f"{d['canon_mean']:.3f}" if d.get("canon_mean") is not None else "--"
+            L.append(f"{label(v)} & {d['nfe']} & {sd} & {pct(d.get('vs_full')) if v != 'full' else '--'} & {canon} & "
+                     f"{d['dist3_mean']:.3f} & {d['xsamp4_mean']:.3f} & {pct(d.get('vs_temp_ent')) if v != 'full' else '--'} \\\\")
+    open(os.path.join(HERE, "tables", "bestof.tex"), "w").write("\n".join(L) + "\n")
+
+
+def table_canon():
+    L = []
+    for key, name in (("canon_ts", "TinyStories (GPT-2 Large, per story)"), ("canon_lm1bl", "LM1B large (GPT-2 Large, per sequence)")):
+        C = R.get(key, {})
+        if not C:
+            continue
+        L.append(f"\\multicolumn{{5}}{{l}}{{\\emph{{{name}}}}} \\\\")
+        for v in ("full", "r6", "b4+r6", "b8+r6"):
+            if v not in C:
+                continue
+            c = C[v]
+            rho = f"{c['rho_canon_vs_logppl']:+.3f}{{\\scriptsize$\\pm${c.get('rho_canon_vs_logppl_sd', 0):.3f}}}"
+            if "rho_canon_vs_gain" in c:
+                rg = f"{c['rho_canon_vs_gain']:+.3f}{{\\scriptsize$\\pm${c.get('rho_canon_vs_gain_sd', 0):.3f}}}"
+                imp = f"{100 * c['share_improved']:.0f}\\%"
+            else:
+                rg = imp = "--"
+            L.append(f"{label(v)} & {c['canon_mean']:.3f} & {rho} & {rg} & {imp} \\\\")
+        if C.get("r6", {}).get("quintiles"):
+            L.append("\\midrule")
+            for q in C["r6"]["quintiles"]:
+                L.append(f"\\quad RT$_6$ on drafts with non-canonicality {q['canon_lo']:.2f}--{q['canon_hi']:.2f} & & "
+                         f"draft {q['draft_ppl']:.2f} $\\rightarrow$ {q['ppl']:.2f} & & {100 * q['share_improved']:.0f}\\% \\\\")
+        L.append("\\midrule")
+    if L and L[-1] == "\\midrule":
+        L.pop()
+    open(os.path.join(HERE, "tables", "canon.tex"), "w").write("\n".join(L) + "\n")
+
+
+def table_scorer2():
+    blocks = (("p3_samplers", "TinyStories, seeds 1--3", ["full", "t0.8@1", "r6", "r5x2", "r3+r6+r9", "d1.1+r6"]),
+              ("p4_ts", "TinyStories, held-out seeds 4--6", ["full", "t0.8@1", "r6", "r5x2", "r3+r6+r9", "d1.2+t0.8@6+r5x2"]),
+              ("p6_ts", "TinyStories twins and human text, seeds 4--6", ["d1.3+t0.8@6+r5x2", "t1.3@1+t1@5+t0.8@6", "h", "h+r6"]),
+              ("lm1b_small", "LM1B small", ["full", "t0.8@1", "r6"]),
+              ("p4_lm1bm", "LM1B medium", ["full", "r6", "r6x2"]),
+              ("lm1b_large", "LM1B large", ["full", "t0.8@1", "r6"]),
+              ("p6_lm1bl", "LM1B large, seeds 4--6", ["full", "r6x2", "d1.2+r6x2", "t1.2@1+t1@6"]))
+    L = []
+    for key, name, order in blocks:
+        S = R.get(key, {})
+        rows = [v for v in order if v in S and "ppl2_mean" in S[v]]
+        if not rows:
+            continue
+        L.append(f"\\multicolumn{{6}}{{l}}{{\\emph{{{name}}}}} \\\\")
+        for v in rows:
+            d = S[v]
+            nm = "human text" if v == "h" else ("human + " + label(v[2:]) if v.startswith("h+") else label(v))
+            vs1 = pct(d.get("vs_full")) if v != "full" else "--"
+            vs2 = pct(d.get("vs_full2")) if v != "full" else "--"
+            L.append(f"{nm} & {d['nfe']} & {d['ppl_mean']:.2f} & {vs1} & {d['ppl2_mean']:.2f} & {vs2} \\\\")
+        L.append("\\midrule")
+    if L and L[-1] == "\\midrule":
+        L.pop()
+    open(os.path.join(HERE, "tables", "scorer2.tex"), "w").write("\n".join(L) + "\n")
+
+
 ts_frontier()
 lm1b_frontier()
 table_twins()
 table_var()
+table_timing()
+table_bestof()
+table_canon()
+table_scorer2()
 nfe_plot()
 changed_plot()
 table_ts()

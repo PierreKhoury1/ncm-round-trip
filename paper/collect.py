@@ -60,6 +60,8 @@ def add_set(store, name, pkls, logs, kind):
                 d[k].append(val)
             if r.get("changed"):
                 d["changed"].append(r["changed"])
+            if r.get("canon"):  # run 19: per-sample non-canonicality of the drafts, averaged per seed
+                d.setdefault("canon", []).append(float(np.mean(r["canon"])))
 
 
 def frontier(S, temps, ref_key="dist3"):
@@ -92,6 +94,8 @@ def summarize(store):
                 d["seed_wins"] = int(sum(a < b for a, b in zip(d["ppl"], base["ppl"])))
             if d["changed"]:
                 d["changed_mean"] = np.mean(np.array(d["changed"]), axis=0).tolist()
+            if d.get("canon"):
+                d["canon_mean"] = float(np.mean(d["canon"]))
 
 
 store = {}
@@ -118,6 +122,8 @@ add_set(store, "p5_ts", [P(f"p5_ts_s{s}.pkl") for s in S456], [L("phase5", f"sco
 add_set(store, "p5_guide", [P(f"p5_guide_s{s}.pkl") for s in S3], [L("phase5", f"score_p5_guide_s{s}.log") for s in S3], "text")
 add_set(store, "p6_ts", [P(f"p6_ts_s{s}.pkl") for s in S456], [L("phase6", f"score_p6_ts_s{s}.log") for s in S456], "text")
 add_set(store, "p6_lm1bl", [P(f"p6_lm1bl_s{s}.pkl") for s in S456], [L("phase6", f"score_p6_lm1bl_s{s}.log") for s in S456], "raw")
+add_set(store, "p9_canon_ts", [P(f"p9_canon_ts_s{s}.pkl") for s in S3], [L("phase9", f"score_p9_canon_ts_s{s}.log") for s in S3], "text")
+add_set(store, "p9_canon_lm1bl", [P(f"p9_canon_lm1bl_s{s}.pkl") for s in S3], [L("phase9", f"score_p9_canon_lm1bl_s{s}.log") for s in S3], "raw")
 
 # multi-round TinyStories variants are compared against the single-round run's temperature curve (same seeds)
 for v in TS_T:
@@ -163,9 +169,15 @@ if store.get("p5_guide"):  # guidance on seeds 1-3: seed-1-3 temperature curve
     summarize({"g": store["p5_guide"]})
     frontier(store["p5_guide"], TS_T + HOT, "dist3")
     frontier(store["p5_guide"], TS_T + HOT, "xsamp4")
-for name in ("lm1b_small", "lm1b_large", "lm1b_large_more", "p3_lm1b", "p4_lm1bm", "p4_lm1bl"):
+if store.get("p9_canon_ts"):  # run 19 (best-of-N by canonicality) on seeds 1-3: seed-1-3 temperature curve
+    for v in TS_T[1:] + HOT:
+        store["p9_canon_ts"].setdefault(v, store["p3_samplers"][v] if v in store["p3_samplers"] else store["ts_single"][v])
+    summarize({"g": store["p9_canon_ts"]})
+    frontier(store["p9_canon_ts"], TS_T + HOT, "dist3")
+    frontier(store["p9_canon_ts"], TS_T + HOT, "xsamp4")
+for name in ("lm1b_small", "lm1b_large", "lm1b_large_more", "p3_lm1b", "p4_lm1bm", "p4_lm1bl", "p9_canon_lm1bl"):
     if name in store and store[name]:
-        if name in ("lm1b_large_more", "p3_lm1b"):
+        if name in ("lm1b_large_more", "p3_lm1b", "p9_canon_lm1bl"):
             for v in ("t0.9@1", "t0.85@1", "t0.8@1"):
                 store[name].setdefault(v, store["lm1b_large"][v])
         frontier(store[name], ["full", "t0.9@1", "t0.85@1", "t0.8@1"], "ent")
@@ -213,6 +225,54 @@ def cond(path, cols):
 
 store["xsum"] = cond(L("phase1", "score_xsum.log"), ["nfe", "r1", "r2", "rl", "ppl", "words"])
 store["wmt14"] = cond(L("phase1", "score_wmt14.log"), ["nfe", "bleu", "bleu_lc", "chrf", "len_ratio"])
+
+# ---- run 19: wall-clock timing, per-sample canonicality analysis, second perplexity scorer ----
+store["timing"] = {}
+for key, f in (("ts", "p9_time_ts.pkl"), ("lm1bl", "p9_time_lm1bl.pkl")):
+    if os.path.exists(P(f)):
+        R_ = pickle.load(open(P(f), "rb"))["results"]
+        store["timing"][key] = {v: {"nfe": r["nfe"], "n": len(r["texts"]), "seconds": r.get("seconds"),
+                                    **{f"t_{k}": val for k, val in (r.get("time") or {}).items()}} for v, r in R_.items()}
+for key, pat in (("canon_ts", "p9_canon_ts_s{}.json"), ("canon_lm1bl", "p9_canon_lm1bl_s{}.json")):
+    J = [json.load(open(P(pat.format(s)))) for s in S3 if os.path.exists(P(pat.format(s)))]
+    if J:
+        C = {}
+        for v in J[0]:
+            rows = [j[v] for j in J if v in j]
+            c = {"nfe": rows[0]["nfe"], "n_seeds": len(rows)}
+            for k in ("canon_mean", "rho_canon_vs_logppl", "rho_canon_vs_gain", "share_improved", "mean_gain_logppl"):
+                vals = [r[k] for r in rows if k in r]
+                if vals:
+                    c[k] = float(np.mean(vals))
+                    c[k + "_sd"] = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+            if rows[0].get("quintiles"):
+                c["quintiles"] = [{k: float(np.mean([r["quintiles"][b][k] for r in rows if k in r["quintiles"][b]]))
+                                   for k in rows[0]["quintiles"][b]} for b in range(len(rows[0]["quintiles"]))]
+            C[v] = c
+        store[key] = C
+SETS2 = {"p3_samplers": (S3, "p3_samplers_s{}"), "p4_ts": (S456, "p4_ts_s{}"), "p6_ts": (S456, "p6_ts_s{}"),
+         "lm1b_small": (S3, "lm1b_small_s{}"), "p4_lm1bm": (S3, "p4_lm1bm_s{}"), "lm1b_large": (S3, "lm1b_large_s{}"),
+         "p4_lm1bl": (S456, "p4_lm1bl_s{}"), "p6_lm1bl": (S456, "p6_lm1bl_s{}"),
+         "p9_canon_ts": (S3, "p9_canon_ts_s{}"), "p9_canon_lm1bl": (S3, "p9_canon_lm1bl_s{}")}
+for name, (seeds, pat) in SETS2.items():  # second scorer: ppl2 next to the GPT-2 Large numbers of each set
+    S = store.get(name)
+    if not S:
+        continue
+    J = [json.load(open(P(f"p9_qwen_{pat.format(s)}.json"))) for s in seeds if os.path.exists(P(f"p9_qwen_{pat.format(s)}.json"))]
+    if not J:
+        continue
+    for v, d in S.items():
+        vals = [j["variants"][v]["ppl"] for j in J if v in j["variants"]]
+        if vals:
+            d["ppl2"] = vals
+            d["ppl2_mean"] = float(np.mean(vals))
+            d["ppl2_sd"] = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+    base = S.get("full", {}).get("ppl2_mean")
+    if base:
+        for v, d in S.items():
+            if "ppl2_mean" in d:
+                d["vs_full2"] = d["ppl2_mean"] / base - 1
+    store.setdefault("scorer2", {})[name] = {"ref": J[0]["ref"], "seeds": len(J)}
 json.dump(store, open(os.path.join(HERE, "results.json"), "w"), indent=1)
 
 for name, S in store.items():

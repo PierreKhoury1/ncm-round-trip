@@ -11,13 +11,18 @@ pick_tokens with the config's frequency / adjacency penalties), then adds refine
   n<k>        ablation: like r<k> but keep the draft's own codes for levels < k (no decode / re-encode)
   q<k>        ablation: like r<k> but re-quantize the draft's latent z_hat instead of decoding and re-encoding
               the text (the latent re-quantization of Scale-travel / DiverseVAR)
+  b<N>        best-of-N by canonicality: draw N drafts and keep, per sample, the one whose coarse codes
+              (levels 0-5) the re-encode changes least; rounds then run on that draft (N * (K-1) draft passes)
 
 Resampling reuses net.generate itself: _sample_level is wrapped so that, for levels 1..k-1, it returns
 the re-encoded codes instead of sampling. z_hat construction, level embeddings, heads and masks are
 therefore exactly the authors' code path.
 
-Writes {"levels", "config", "results": {variant: {"nfe", "texts", "raw"}}}: analyze_skip.py scores "texts"
-(TinyStories protocol); score_flm.py scores "raw" (LM1B FLM protocol).
+Writes {"levels", "config", "results": {variant: {"nfe", "texts", "raw", "canon", "draft_texts", "seconds", "time"}}}:
+analyze_skip.py scores "texts" (TinyStories protocol); score_flm.py scores "raw" (LM1B FLM protocol).
+"canon" is the per-sample share of the draft's level 0-5 codes that the re-encode changes (its non-canonicality),
+"draft_texts" the decoded draft before any round, "seconds" the wall-clock of the variant and "time" its split
+into generator passes / tokenizer encode / decode + token picking (CUDA-synchronised).
 """
 import argparse, os, pickle, sys, time
 import torch
@@ -153,6 +158,31 @@ def _sample_with_force(logits, temperature, top_k_, top_p_):
 
 net._sample_level = _sample_with_force
 
+_tm = {"gen": 0.0, "enc": 0.0, "dec": 0.0}  # wall-clock split of the current variant (see "time" in the output)
+
+
+def _now():
+    if dev.type == "cuda":
+        torch.cuda.synchronize()
+    return time.time()
+
+
+@torch.no_grad()
+def encode(toks):
+    """Tokenizer encode (text -> code stack), timed."""
+    t = _now()
+    g = tk.vqvae.encode(toks)
+    _tm["enc"] += _now() - t
+    return g
+
+
+CANON_L = min(6, K)
+
+
+def canon_score(src, g):
+    """Per-sample share of the level 0..5 codes of stack g that the re-encoded stack src disagrees with."""
+    return torch.stack([(s != d).float().mean(1) for s, d in zip(src[:CANON_L], split_codes(g)[:CANON_L])], 1).mean(1)
+
 
 @torch.no_grad()
 def generate(l0, prefix, temps, forced=None, upto=0):
@@ -163,11 +193,16 @@ def generate(l0, prefix, temps, forced=None, upto=0):
         elif net.predict_level0:
             offset = 1
     _state.update(codes=forced, calls=0, upto=upto, offset=offset, temps=temps)
+    t = _now()
     g = net.generate(l0, prefix, temperature=temps[-1], top_k=top_k, top_p=top_p,
                      cfg_scale=cfg_scale, cfg_null_eos=EOS)
+    _tm["gen"] += _now() - t
     _state.update(codes=None, calls=0, upto=0, offset=0, temps=None)
+    t = _now()
     _, zl = vq.idx_to_zhats(g, return_zlevels=True)
-    return pick_tokens(tk.vqvae.decoder(zl[-1])), g
+    toks = pick_tokens(tk.vqvae.decoder(zl[-1]))
+    _tm["dec"] += _now() - t
+    return toks, g
 
 
 @torch.no_grad()
@@ -189,14 +224,16 @@ def parse(name):
     """full | t<T>@<k> (temperature T for levels >= k) | d<T> (draft at temperature T, rounds keep the others) |
     r<k> | r<k>x<n> (n rounds) | n<k> (ablation: resample levels >= k from the draft's own codes, no re-encode) |
     q<k> (ablation: re-quantize the draft's latent) | g<w> (round-trip guidance weight for every round) |
-    h (start from real validation text instead of a draft) |
+    h (start from real validation text instead of a draft) | b<N> (best of N drafts by canonicality) |
     parts joined by '+'. Rounds run in the order written, e.g. r4+r8 = redo from level 4, then redo from level 8."""
-    temps, draft, rounds, guide, human = [temp0] * K, None, [], 0.0, False
+    temps, draft, rounds, guide, human, bestof = [temp0] * K, None, [], 0.0, False, 1
     if name == "full":
-        return temps, temps, rounds, guide, human
+        return temps, temps, rounds, guide, human, bestof
     for part in name.split("+"):
         if part == "h":
             human = True
+        elif part.startswith("b"):
+            bestof = int(part[1:])
         elif part.startswith("g"):
             guide = float(part[1:])
         elif part.startswith("t"):
@@ -210,7 +247,7 @@ def parse(name):
             rounds += [(int(k), part[0])] * int(n)
         else:
             raise ValueError(name)
-    return temps, draft or temps, rounds, guide, human
+    return temps, draft or temps, rounds, guide, human, bestof
 
 
 # ---------------- inputs: unconditional (TinyStories, LM1B) or conditional test set (XSum, WMT14) ----------------
@@ -238,30 +275,57 @@ if any("h" in v.split("+") for v in a.variants.split(",")):
     HUMAN = [list(r)[:T_ctx] for r in pickle.load(open(a.human, "rb")) if len(r) >= T_ctx][:3 * N]
     HSTART = ((a.seed - 4) % 3) * N  # seeds 4, 5, 6 take disjoint slices of the first 3N openings
 
+def draw_l0(B):
+    return torch.multinomial(L0_P.cpu(), B * levels[0], replacement=True).view(B, levels[0]).to(dev) \
+        if L0_P is not None else None
+
+
 results = {}
 t0 = time.time()
 for name in a.variants.split(","):
-    temps, draft, rounds, guide, human = parse(name)
+    temps, draft, rounds, guide, human, bestof = parse(name)
     torch.manual_seed(a.seed)
-    texts, raw = [], []
+    texts, raw, canon_rows, draft_texts, draft_raw = [], [], [], [], []
     changed, nchg = torch.zeros(K), 0  # share of each level's codes that the first re-encode changes
+    for key in _tm:
+        _tm[key] = 0.0
+    t_var = _now()
     for s in range(0, N, a.bs):
         B = min(a.bs, N - s)
         if COND:
             l0 = None
             prefix = torch.tensor([cond_prefix(items[i]) for i in range(s, s + B)], device=dev)
         else:
-            l0 = torch.multinomial(L0_P.cpu(), B * levels[0], replacement=True).view(B, levels[0]).to(dev) \
-                if L0_P is not None else None
+            l0 = draw_l0(B)
             prefix = torch.full((B, 1), EOS, device=dev)
         if human:  # real text in place of the draft; rounds then run unchanged
             toks = torch.tensor(HUMAN[HSTART + s:HSTART + s + B], device=dev)
-            g = tk.vqvae.encode(toks)
+            g = encode(toks)
+            src0 = split_codes(g)
+        elif bestof > 1:  # keep, per sample, the draft whose coarse codes the re-encode changes least
+            best = None
+            for j in range(bestof):
+                tj, gj = generate(l0 if j == 0 else draw_l0(B), prefix, draft)
+                sj = split_codes(encode(tj))
+                cj = canon_score(sj, gj)
+                if best is None:
+                    best = (cj, tj, gj, sj)
+                else:
+                    better = cj < best[0]
+                    best = (torch.where(better, cj, best[0]), torch.where(better[:, None], tj, best[1]),
+                            torch.where(better[:, None], gj, best[2]),
+                            [torch.where(better[:, None], x, y) for x, y in zip(sj, best[3])])
+            _, toks, g, src0 = best
         else:
             toks, g = generate(l0, prefix, draft)
+            src0 = split_codes(encode(toks))  # the first round's re-encode, also the canonicality diagnostic
+        canon_rows += canon_score(src0, g).tolist()
+        if rounds:
+            draft_texts += [dec(t) for t in toks.tolist()]
+            draft_raw += toks.tolist()  # LM1B "texts" are cut at the leading [CLS]; FLM scoring needs the ids
         for i, (k, mode) in enumerate(rounds):
             if mode == "r":
-                src = split_codes(tk.vqvae.encode(toks))
+                src = src0 if i == 0 else split_codes(encode(toks))
             elif mode == "q":
                 src = split_codes(vq.z_to_idx(vq.idx_to_zhats(g, return_zlevels=True)[1][-1]))
             else:
@@ -275,11 +339,15 @@ for name in a.variants.split(","):
                 toks, g = generate(src[0], prefix, temps, forced=src, upto=k)
         texts += [dec(t) for t in toks.tolist()]
         raw += toks.tolist()
-    nfe = (0 if human else K - 1) + sum(K - k for k, _ in rounds)
+    seconds = _now() - t_var
+    nfe = (0 if human else bestof * (K - 1)) + sum(K - k for k, _ in rounds)
     results[name] = {"skip": [], "nfe": nfe, "texts": texts, "raw": raw,
-                     "changed": (changed / nchg).tolist() if nchg else None}
+                     "changed": (changed / nchg).tolist() if nchg else None,
+                     "canon": canon_rows, "draft_texts": draft_texts or None, "draft_raw": draft_raw or None,
+                     "seconds": seconds, "time": dict(_tm)}
     chg = " changed/level " + " ".join(f"{v:.2f}" for v in results[name]["changed"]) if nchg else ""
-    print(f"{name:12s} NFE={nfe:2d} ({time.time() - t0:.0f}s){chg} | {texts[0][:90]!r}", flush=True)
+    print(f"{name:12s} NFE={nfe:2d} {seconds:6.1f}s (gen {_tm['gen']:.1f} enc {_tm['enc']:.1f} dec {_tm['dec']:.1f})"
+          f" canon {sum(canon_rows) / max(len(canon_rows), 1):.3f}{chg} | {texts[0][:80]!r}", flush=True)
 
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 out = {"levels": levels, "config": a.config, "results": results}
