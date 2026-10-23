@@ -63,6 +63,6 @@ XSum/WMT14 use `--split test` and `score_cond.py`.
 
 ## Credits
 
-Built on the NCM code, checkpoints and data released by Kumbong et al. (MIT licence). `pick_tokens` in
+Built on the NCM code, checkpoints and data released by Kumbong et al. (MIT licence, see `THIRD_PARTY_NOTICES`). `pick_tokens` in
 `refine_eval.py` and the FLM scoring in `score_flm.py` are copied from the NCM repository's `scripts/eval_shard.py`
 and `scripts/eval_merge.py`.
