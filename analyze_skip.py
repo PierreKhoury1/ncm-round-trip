@@ -44,4 +44,4 @@ rows.sort(key=lambda x: (-x[0], x[3]))
 print(f"levels={levels}  ref={a.ref}  N={len(next(iter(res.values()))['texts'])}\n")
 print(f"{'schedule':16s} {'NFE':>4} {'genPPL':>9} {'entropy':>8} {'words':>6}  skipped levels")
 for nfe, name, skip, ppl, ent, w in rows:
-    print(f"{name:16s} {nfe:4d} {ppl:9.2f} {ent:8.3f} {w:6.1f}  {skip}")
+    print(f"{name:16s} {nfe:5.1f} {ppl:9.2f} {ent:8.3f} {w:6.1f}  {skip}")

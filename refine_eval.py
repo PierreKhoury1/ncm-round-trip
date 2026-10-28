@@ -13,6 +13,11 @@ pick_tokens with the config's frequency / adjacency penalties), then adds refine
               the text (the latent re-quantization of Scale-travel / DiverseVAR)
   b<N>        best-of-N by canonicality: draw N drafts and keep, per sample, the one whose coarse codes
               (levels 0-5) the re-encode changes least; rounds then run on that draft (N * (K-1) draft passes)
+  a<k>@<t>    adaptive round: like r<k>, but per sample only when its non-canonicality (share of level 0-5
+              codes the re-encode changes) exceeds t; the others keep their current text and spend no passes.
+              a<k>x<n>@<t> runs up to n rounds with the same test before each (early stop when the round
+              trip no longer rewrites the coarse levels). "nfe" is then the mean passes per sample, and
+              "passes" the per-sample list. a<k>@0 equals r<k> sample for sample.
 
 Resampling reuses net.generate itself: _sample_level is wrapped so that, for levels 1..k-1, it returns
 the re-encoded codes instead of sampling. z_hat construction, level embeddings, heads and masks are
@@ -242,9 +247,13 @@ def parse(name):
                 temps[j] = float(T)
         elif part.startswith("d"):
             draft = [float(part[1:])] * K
+        elif part.startswith("a"):
+            kn, thr = part[1:].split("@")
+            k, n = (kn.split("x") + ["1"])[:2]
+            rounds += [(int(k), "a", float(thr))] * int(n)
         elif part[0] in "rnq":
             k, n = (part[1:].split("x") + ["1"])[:2]
-            rounds += [(int(k), part[0])] * int(n)
+            rounds += [(int(k), part[0], None)] * int(n)
         else:
             raise ValueError(name)
     return temps, draft or temps, rounds, guide, human, bestof
@@ -285,7 +294,7 @@ t0 = time.time()
 for name in a.variants.split(","):
     temps, draft, rounds, guide, human, bestof = parse(name)
     torch.manual_seed(a.seed)
-    texts, raw, canon_rows, draft_texts, draft_raw = [], [], [], [], []
+    texts, raw, canon_rows, draft_texts, draft_raw, passes = [], [], [], [], [], []
     changed, nchg = torch.zeros(K), 0  # share of each level's codes that the first re-encode changes
     for key in _tm:
         _tm[key] = 0.0
@@ -323,8 +332,9 @@ for name in a.variants.split(","):
         if rounds:
             draft_texts += [dec(t) for t in toks.tolist()]
             draft_raw += toks.tolist()  # LM1B "texts" are cut at the leading [CLS]; FLM scoring needs the ids
-        for i, (k, mode) in enumerate(rounds):
-            if mode == "r":
+        npass = torch.full((B,), 0.0 if human else float(bestof * (K - 1)))  # per-sample generator passes
+        for i, (k, mode, thr) in enumerate(rounds):
+            if mode in "ra":
                 src = src0 if i == 0 else split_codes(encode(toks))
             elif mode == "q":
                 src = split_codes(vq.z_to_idx(vq.idx_to_zhats(g, return_zlevels=True)[1][-1]))
@@ -333,20 +343,33 @@ for name in a.variants.split(","):
             if i == 0 and mode != "n":
                 changed += torch.stack([(s != d).float().mean() for s, d in zip(src, split_codes(g))]).cpu() * B
                 nchg += B
-            if guide and mode != "n":
+            if mode == "a":  # adaptive: only the samples whose coarse levels the round trip still rewrites
+                active = (canon_score(src, g) > thr).nonzero().flatten()
+                if active.numel() == 0:
+                    continue
+                sub = [s[active] for s in src]
+                t_sub, g_sub = generate(sub[0], prefix[active], temps, forced=sub, upto=k)
+                toks, g = toks.clone(), g.clone()
+                toks[active], g[active] = t_sub, g_sub
+                npass[active.cpu()] += K - k
+            elif guide and mode != "n":
                 toks, g = generate_guided(src, split_codes(g), prefix, temps, k, guide)
+                npass += K - k
             else:
                 toks, g = generate(src[0], prefix, temps, forced=src, upto=k)
+                npass += K - k
         texts += [dec(t) for t in toks.tolist()]
         raw += toks.tolist()
+        passes += npass.tolist()
     seconds = _now() - t_var
-    nfe = (0 if human else bestof * (K - 1)) + sum(K - k for k, _ in rounds)
-    results[name] = {"skip": [], "nfe": nfe, "texts": texts, "raw": raw,
+    adaptive = any(m == "a" for _, m, _ in rounds)
+    nfe = sum(passes) / max(len(passes), 1) if adaptive else int(round(passes[0])) if passes else 0
+    results[name] = {"skip": [], "nfe": nfe, "texts": texts, "raw": raw, "passes": passes if adaptive else None,
                      "changed": (changed / nchg).tolist() if nchg else None,
                      "canon": canon_rows, "draft_texts": draft_texts or None, "draft_raw": draft_raw or None,
                      "seconds": seconds, "time": dict(_tm)}
     chg = " changed/level " + " ".join(f"{v:.2f}" for v in results[name]["changed"]) if nchg else ""
-    print(f"{name:12s} NFE={nfe:2d} {seconds:6.1f}s (gen {_tm['gen']:.1f} enc {_tm['enc']:.1f} dec {_tm['dec']:.1f})"
+    print(f"{name:12s} NFE={nfe:5.2f} {seconds:6.1f}s (gen {_tm['gen']:.1f} enc {_tm['enc']:.1f} dec {_tm['dec']:.1f})"
           f" canon {sum(canon_rows) / max(len(canon_rows), 1):.3f}{chg} | {texts[0][:80]!r}", flush=True)
 
 os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)

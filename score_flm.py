@@ -58,4 +58,4 @@ rows.sort(key=lambda x: (-x[0], x[2]))
 print(f"config={D['config']}  ref={a.ref}  N={len(next(iter(D['results'].values()))['raw'])}  (FLM protocol)\n")
 print(f"{'schedule':16s} {'NFE':>4} {'genPPL':>9} {'entropy':>8} {'words':>6}  skipped levels")
 for nfe, name, ppl, ent in rows:
-    print(f"{name:16s} {nfe:4d} {ppl:9.2f} {ent:8.3f} {0.0:6.1f}  []")
+    print(f"{name:16s} {nfe:5.1f} {ppl:9.2f} {ent:8.3f} {0.0:6.1f}  []")

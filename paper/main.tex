@@ -105,7 +105,7 @@ with codebooks $e_k$ of 4{,}096 entries and $\hat z_{-1}{=}0$. Read left to righ
 \end{algorithmic}
 \end{algorithm}
 
-Algorithm~\ref{alg:rt} gives the sampler. One round with restart level $k$, written $\RT{k}$, costs $K{-}k$ extra generator passes plus one tokenizer encoder pass. Multiple rounds are written $\RT{5}{\times}2$ (two rounds from level 5) or $\RT{3}{+}\RT{6}{+}\RT{9}$ (three rounds from successively finer levels). Because pass $k$ processes $\ell_k$ positions, regenerating levels $6..11$ re-processes 520 of the 640 positions of a full sample; FLOPs therefore grow by about $1.8\times$ for $\RT{6}$ and $3.3\times$ for three rounds, somewhat more than the NFE ratios of $1.5\times$ and $2.6\times$ suggest; measured wall-clock follows the FLOPs ($1.9\times$ and $3.8\times$ on one GPU, Section~\ref{sec:cost}).
+Algorithm~\ref{alg:rt} gives the sampler. One round with restart level $k$, written $\RT{k}$, costs $K{-}k$ extra generator passes plus one tokenizer encoder pass. Multiple rounds are written $\RT{5}{\times}2$ (two rounds from level 5) or $\RT{3}{+}\RT{6}{+}\RT{9}$ (three rounds from successively finer levels). Because pass $k$ processes $\ell_k$ positions, regenerating levels $6..11$ re-processes 520 of the 641 positions of a full sample; FLOPs therefore grow by about $1.8\times$ for $\RT{6}$ and $3.3\times$ for three rounds, somewhat more than the NFE ratios of $1.5\times$ and $2.6\times$ suggest; measured wall-clock follows the FLOPs ($1.9\times$ and $3.8\times$ on one GPU, Section~\ref{sec:cost}).
 
 \paragraph{Implementation.} We do not reimplement sampling. The authors' \texttt{generate} calls a per-level sampling function once per level; we wrap that function so that, for levels below $k$, it returns the re-encoded codes instead of sampling (Appendix~\ref{app:impl}). Code embeddings, level encodings, heads, attention masks and the token picker are therefore exactly the released ones. As a check, forcing \emph{every} level to the re-encoded stack reproduces the draft text exactly on TinyStories (8/8 samples tested), 27/32 on XSum and only 15/32 on WMT14, whose tokenizer round trip is lossy (Section~\ref{sec:cond}).
 
@@ -184,6 +184,13 @@ Sampler & NFE & Gen.\ PPL $\downarrow$ & $\Delta$ & $H$ & dist-3 $\uparrow$ & xs
 \label{fig:lm1b}
 \end{figure}
 
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.5\linewidth]{figs/sizes.pdf}
+\caption{Gain of round-trip refinement against model size on LM1B (same seeds and protocol as Table~\ref{tab:lm1b}). The gain grows from the small to the large checkpoint; a method that only compensated for a weak generator would show the opposite trend.}
+\label{fig:sizes}
+\end{figure}
+
 \paragraph{A second domain and three model sizes.} The result carries over to LM1B, which differs from TinyStories in domain (news sentences rather than children's stories), tokenizer (BERT word pieces) and evaluation protocol (the authors' FLM scoring; Table~\ref{tab:lm1b}, Figure~\ref{fig:lm1b}). Perplexities are higher here because news sentences are harder to predict than children's stories, so the relative changes are what to read. On the small model one round lowers Gen.\ PPL by 11--18\% depending on the restart level, on the large model by 6--22\%, on every seed and at equal or slightly \emph{higher} entropy. Temperature cannot do this: $\tau{=}0.8$ reaches $-16\%$ on the large model only by dropping entropy from 4.339 to 4.286, i.e.\ by narrowing the vocabulary the samples draw from, whereas $\RT{6}$ reaches $-22\%$ at entropy 4.338. Two rounds from level 6 reach 56.63 on the large model ($-29.3\%$) at entropy 4.346, higher than the released sampler's. The released medium model behaves the same way ($\RT{6}$ $-20.6\%$, $\RT{6}{\times}2$ $-28.8\%$ at entropy 4.342 vs.\ 4.339). Across the three sizes the gain of $\RT{6}$ grows rather than shrinks, $-14.8\%$ (small), $-20.6\%$ (medium), $-22.0\%$ (large); if the round trip were only compensating for a weak generator, a stronger generator should have less to gain, so this ordering suggests the mismatch it repairs is a property of the training recipe, not of model capacity. Entropy is the least sensitive diversity axis on LM1B, so we also check the stricter one: measured on distinct-3 of the raw ids, $\RT{6}$ is 13--17\% and $\RT{6}{\times}2$ 17--21\% below the temperature curve on every seed (1--6), and the hot-draft sampler of Section~\ref{sec:hot} reaches $-21\%$ at the released sampler's own distinct-3 (0.894 vs.\ 0.896).
 
 \subsection{Conditional generation}
@@ -227,6 +234,13 @@ Sampler & non-canon.\ & $\rho$(non-canon., $\log$ PPL) & $\rho$(non-canon., gain
 \label{tab:canon}
 \end{table}
 
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.95\linewidth]{figs/fifths.pdf}
+\caption{Per-fifth view of Table~\ref{tab:canon}: drafts binned by how much of their coarse stack the tokenizer rewrites, with their Gen.\ PPL before and after one round from level 6. On TinyStories the most-rewritten fifth starts 48\% worse than the least-rewritten and gains almost twice as much; on LM1B large every fifth is rewritten heavily and gains about the same.}
+\label{fig:fifths}
+\end{figure}
+
 \paragraph{Selecting drafts by canonicality is a diversity trade.} The signal suggests a selector: draw $N$ drafts and keep, per sample, the one re-encoding changes least (Table~\ref{tab:bestof}). At first sight it works: best-of-8 lowers Gen.\ PPL by 12.9\%, almost as much as $\RT{6}$ ($-17.3\%$), although for $8\times$ the passes. The diversity columns show what it actually does. By picking the drafts the tokenizer finds least surprising, it picks the most generic ones: distinct-3 falls from 0.749 to 0.699 and cross-sample overlap rises from 0.162 to 0.216, a larger loss of diversity than $\tau{=}0.8$ incurs, and at that diversity the temperature curve is 11.7\% \emph{better} than the selector. In other words, best-of-$N$ by canonicality is a worse version of lowering the temperature. Refining the selected draft recovers part of the loss (best-of-4 + $\RT{6}$: $-25.3\%$ raw, but only $-4.5\%$ against the frontier, versus $-12.4\%$ for $\RT{6}$ alone), and the larger selectors fall below the diversity range of the curve altogether. On LM1B large, where non-canonicality barely varies between drafts, the selector does nothing at all: best-of-4 scores 79.7 against 80.1 for the released sampler and adds 0.8\% to $\RT{6}$ (62.0 vs.\ 62.5). Non-canonicality therefore ranks drafts by quality but is not a free lunch as a filter; regenerating the fine levels on canonical coarse codes is what improves a draft without trading its diversity away.
 
 \begin{table}[!htb]
@@ -245,6 +259,13 @@ Sampler & NFE & Gen.\ PPL $\downarrow$ & $\Delta$ & non-canon.\ & dist-3 $\uparr
 \end{table}
 
 \paragraph{The re-encoding is what helps.} Table~\ref{tab:ablation} separates the ingredients. The first control asks whether the extra passes alone help. Regenerating levels 6--11 conditioned on the draft's own coarse codes (Resample$_6$) costs the same six passes as $\RT{6}$ but gives no gain at all: 16.43 against 16.15 on TinyStories and $+0.6\%$ on LM1B, both within seed noise. This is expected, since it only draws the fine levels again from the conditional distribution that produced them, and it rules out the simplest explanation, that any second attempt at the fine levels is better than the first. The second control asks whether the text itself matters, or only re-quantization. Re-quantizing the draft's latent with Eq.~\eqref{eq:rq} instead of re-encoding its text (LatentRQ$_6$, a final-latent analogue of image scale-travel, which re-quantizes a partial map at an intermediate scale) changes the coarse codes almost as much, except level 0, which it keeps 72\% of the time, and recovers part of the gain: $-11.5\%$ on TinyStories and $-17.9\%$ on LM1B. But it also lowers diversity, so at matched diversity it is worth $-6.8\%$ and $-7.7\%$, against $-12.4\%$ and $-20.9\%$ for $\RT{6}$. Going through the decoded text, which discards whatever in the latent does not affect the output and lets the encoder describe the text afresh, roughly doubles the matched-diversity gain; the discrete text is a better anchor than the continuous latent. The same ordering holds with two rounds (Resample$_5{\times}2$ $-0.2\%$, LatentRQ$_5{\times}2$ $-19.9\%$, $\RT{5}{\times}2$ $-27.6\%$), so it is not a one-round accident.
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.95\linewidth]{figs/ablation_ladder.pdf}
+\caption{Three ways to spend the same six extra passes (Table~\ref{tab:ablation}). Resampling the fine levels from the draft's own coarse codes gives nothing; re-quantizing the latent recovers part of the gain but loses diversity; re-encoding the decoded text gives the full gain at almost unchanged diversity. Orange bars compare each sampler with the released sampler's temperature curve at the same diversity.}
+\label{fig:ladder}
+\end{figure}
 
 \subsection{Spending the gain on diversity}
 \label{sec:hot}
@@ -412,6 +433,13 @@ Sampler & NFE & ms / sample & generator (s) & tokenizer (s) & time & NFE \\
 \label{tab:timing}
 \end{table}
 
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.95\linewidth]{figs/timing.pdf}
+\caption{Where the time goes (Table~\ref{tab:timing}): measured wall-clock per variant on one RTX 4090, split into generator passes and tokenizer work. The tokenizer side stays about a tenth of the total, so the cost of refinement is the extra generator passes and nothing else.}
+\label{fig:timing}
+\end{figure}
+
 \subsection{Does it transfer to images?}
 \label{sec:var}
 
@@ -487,13 +515,13 @@ Generator (11 passes, $\tau{=}1$) & batch & Gen.\ PPL $\downarrow$ & dist-3 $\up
 
 \section{Limitations}
 
-Our evaluation relies on Gen.\ PPL under GPT-2 Large (checked against Qwen2.5-7B), simple diversity statistics, MAUVE and a single 7B LLM judge with a strong position bias that we average out; we did not run a human evaluation, and at equal Gen.\ PPL the judge does not distinguish refinement from a lower temperature. All models are around 100M parameters with 128-token sequences; the OpenWebText checkpoint, the only released model of long general text, was not yet available on the hub when we ran these experiments. Refinement costs 1.3--2.6$\times$ the generator passes, 1.5--3.3$\times$ the generator FLOPs and 1.9--3.8$\times$ the measured wall-clock. It fails when the tokenizer round trip is lossy (WMT14), and it does not transfer to the image model we tried (VAR-d16, FID-10k only). Our reproduction of the released TinyStories sampler is 5\% above the paper's number, and all relative claims are against our reproduction. The train--test mismatch is our explanation of the gain, supported by the canonicality correlations and the ablations but not tested causally; the direct test, a generator trained on its own sampled stacks, is the self-correction pilot of Section~\ref{sec:negative}, which tied with its control. Restart levels and hot-draft temperatures were chosen on the same three seeds we report, from small grids. Most fine-tuning baselines were limited to batch 64--128, and a 200-step pilot at batch 2{,}048 showed that the control then no longer drifts, so the earlier training-side negative results may partly reflect the small batches, with the exception of the diversity argument against distillation and the self-correction pilot itself.
+Our evaluation relies on Gen.\ PPL under GPT-2 Large (checked against Qwen2.5-7B), simple diversity statistics, MAUVE and a single 7B LLM judge with a strong position bias that we average out; we did not run a human evaluation, and at equal Gen.\ PPL the judge does not distinguish refinement from a lower temperature. All models are around 100M parameters with 128-token sequences; the authors list an OpenWebText checkpoint, which would be the only model of long general text, but its weights were not on the hub at the time of writing, so we could not test it. Refinement costs 1.3--2.6$\times$ the generator passes, 1.5--3.3$\times$ the generator FLOPs and 1.9--3.8$\times$ the measured wall-clock. It fails when the tokenizer round trip is lossy (WMT14), and it does not transfer to the image model we tried (VAR-d16, FID-10k only). Our reproduction of the released TinyStories sampler is 5\% above the paper's number, and all relative claims are against our reproduction. The train--test mismatch is our explanation of the gain, supported by the canonicality correlations and the ablations but not tested causally; the direct test, a generator trained on its own sampled stacks, is the self-correction pilot of Section~\ref{sec:negative}, which tied with its control. Restart levels and hot-draft temperatures were chosen on the same three seeds we report, from small grids. Most fine-tuning baselines were limited to batch 64--128, and a 200-step pilot at batch 2{,}048 showed that the control then no longer drifts, so the earlier training-side negative results may partly reflect the small batches, with the exception of the diversity argument against distillation and the self-correction pilot itself.
 
 \section{Conclusion}
 
-NCM's coarse-to-fine sampler produces code stacks that its own tokenizer would never produce for the same text. Passing the draft through the tokenizer and regenerating the fine levels repairs this, with no training and a few lines of code, and lowers generative perplexity by 17--31\% on TinyStories and 22--29\% on LM1B while keeping diversity, 10--14\% beyond what temperature can buy and 15--22\% when paired with a hotter draft. The ablations locate the gain in the re-encoding itself: resampling without it does nothing, and re-quantizing the latent instead of the text gives about half. The results hold on held-out seeds and do not shrink with model size; exact temperature twins and real human text show that the gain is neither a temperature schedule nor a sharpener; an LLM judge prefers refined stories; MAUVE moves closer to human text; and on Sudoku the gain is limited to the hardest puzzles, while verifier-guided search is better served by plain resampling. The method needs a lossless tokenizer round trip, and it trades extra passes for quality, so it complements rather than replaces NCM's main appeal of speed. Training-time alternatives that we could afford, including distilling the refined sampler, did not help.
+NCM's coarse-to-fine sampler produces code stacks that its own tokenizer would never produce for the same text. Passing the draft through the tokenizer and regenerating the fine levels repairs this, with no training and a few lines of code, and lowers generative perplexity by 17--31\% on TinyStories and 22--29\% on LM1B while keeping diversity, 10--14\% beyond what temperature can buy and 15--25\% when paired with a per-level temperature schedule. The ablations locate the gain in the re-encoding itself: resampling without it does nothing, and re-quantizing the latent instead of the text gives about half. The results hold on held-out seeds and do not shrink with model size; exact temperature twins and real human text show that the gain is neither a temperature schedule nor a sharpener; an LLM judge prefers refined stories; MAUVE moves closer to human text; and on Sudoku the gain is limited to the hardest puzzles, while verifier-guided search is better served by plain resampling. The method needs a lossless tokenizer round trip, and it trades extra passes for quality, so it complements rather than replaces NCM's main appeal of speed. Training-time alternatives that we could afford, including distilling the refined sampler, did not help.
 
-\paragraph{Acknowledgements.} We thank the NCM authors for releasing checkpoints, data and evaluation code, without which none of this would have been possible. This work was carried out independently of any King's College London course. Code and experiments were developed with the assistance of an AI coding assistant (Claude); the author is responsible for all content.
+\paragraph{Acknowledgements.} We thank the NCM authors for releasing checkpoints, data and evaluation code, without which none of this would have been possible. This work was carried out independently of any King's College London course.
 
 \clearpage
 \bibliographystyle{plainnat}
@@ -535,5 +563,9 @@ TinyStories, seed 1, sample 4 (same draft for all rows; differences from the dra
 \end{description}
 
 A restart at level 6 keeps the story and repairs local errors; a restart at level 3 re-plans the content (``cat named Amy'' becomes ``girl named Amy'') and, as Table~\ref{tab:ts} shows, trades a little diversity for the largest fluency gain.
+
+\section*{Use of AI tools}
+
+Code and experiments were developed with the assistance of an AI coding assistant (Claude, Anthropic). The author designed the study, chose what to run, checked every number against the run logs and is responsible for all content.
 
 \end{document}
