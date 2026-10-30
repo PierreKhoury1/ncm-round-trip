@@ -1,5 +1,9 @@
 # Round-Trip Refinement for Next-Concept Models
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23737646.svg)](https://doi.org/10.5281/zenodo.23737646)
+
+Preprint and code archive: https://doi.org/10.5281/zenodo.23737646 (Pierre Khoury, King's College London, 28 October 2026).
+
 A training-free sampler for [Next-Concept Modeling](https://arxiv.org/abs/2610.14162) (NCM). Decode the draft, re-encode
 the text with NCM's own tokenizer, keep the re-encoded coarse levels and let the unchanged generator redo the fine levels.
 
