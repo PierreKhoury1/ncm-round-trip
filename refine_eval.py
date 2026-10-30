@@ -295,6 +295,7 @@ for name in a.variants.split(","):
     temps, draft, rounds, guide, human, bestof = parse(name)
     torch.manual_seed(a.seed)
     texts, raw, canon_rows, draft_texts, draft_raw, passes = [], [], [], [], [], []
+    canon_rounds = [[] for _ in rounds]  # per round: per-sample non-canonicality of the current text before that round
     changed, nchg = torch.zeros(K), 0  # share of each level's codes that the first re-encode changes
     for key in _tm:
         _tm[key] = 0.0
@@ -343,6 +344,8 @@ for name in a.variants.split(","):
             if i == 0 and mode != "n":
                 changed += torch.stack([(s != d).float().mean() for s, d in zip(src, split_codes(g))]).cpu() * B
                 nchg += B
+            if mode in "ra":
+                canon_rounds[i] += canon_score(src, g).tolist()
             if mode == "a":  # adaptive: only the samples whose coarse levels the round trip still rewrites
                 active = (canon_score(src, g) > thr).nonzero().flatten()
                 if active.numel() == 0:
@@ -365,6 +368,7 @@ for name in a.variants.split(","):
     adaptive = any(m == "a" for _, m, _ in rounds)
     nfe = sum(passes) / max(len(passes), 1) if adaptive else int(round(passes[0])) if passes else 0
     results[name] = {"skip": [], "nfe": nfe, "texts": texts, "raw": raw, "passes": passes if adaptive else None,
+                     "canon_rounds": [c for c in canon_rounds if c] or None,
                      "changed": (changed / nchg).tolist() if nchg else None,
                      "canon": canon_rows, "draft_texts": draft_texts or None, "draft_raw": draft_raw or None,
                      "seconds": seconds, "time": dict(_tm)}

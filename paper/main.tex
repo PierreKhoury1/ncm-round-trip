@@ -18,6 +18,7 @@
 
 \newcommand{\pend}[1]{\textcolor{red}{#1}}  % numbers still to be filled in from pending runs
 \newcommand{\RT}[1]{\mathrm{RT}_{#1}}
+\newcommand{\ART}[1]{\mathrm{ART}_{#1}}
 \makeatletter\newcommand{\tabinput}[1]{\@@input #1 }\makeatother  % \input is not expandable inside tabular
 \captionsetup{font=small,labelfont=bf}
 
@@ -43,7 +44,7 @@ This suggests a simple repair. Once a draft exists, the tokenizer can tell us ho
 \paragraph{Contributions.}
 \begin{itemize}
 \item A diagnosis: NCM's sampled code stacks are non-canonical (not the stacks the tokenizer assigns to their own decoded text), and re-encoding replaces them by canonical ones without changing the text (Section~\ref{sec:why}). On TinyStories, how non-canonical a draft is predicts how bad it is (Spearman 0.37 with its Gen.\ PPL), and the round trip helps most where the rewrite is largest.
-\item Round-trip refinement, a training-free sampler with one knob, the restart level $k$ (Section~\ref{sec:method}), and ablations showing that the re-encoding through text, not the extra passes, carries the gain.
+\item Round-trip refinement, a training-free sampler with one knob, the restart level $k$ (Section~\ref{sec:method}), and ablations showing that the re-encoding through text, not the extra passes, carries the gain; plus a free per-sample gate on the same signal that spends rounds only where the draft drifts (Section~\ref{sec:adaptive}).
 \item An evaluation on nine released checkpoints under the authors' protocols, with the temperature frontier, three diversity measures and exact 11-pass temperature twins as controls (Section~\ref{sec:results}): $-17\%$ to $-31\%$ gen-PPL on TinyStories and $-22\%$ to $-29\%$ on LM1B large, 10--15\% beyond the temperature frontier, and clear failure cases (translation with a lossy tokenizer, easy Sudoku).
 \item Evidence beyond Gen.\ PPL: held-out seeds, an LLM judge, MAUVE against human text, a trend over three model sizes, and a reasoning task (Sudoku) where refinement fixes puzzles without breaking solved ones (Sections~\ref{sec:heldout}--\ref{sec:sudoku}).
 \item Negative results for seven training-side ideas, including the two the NCM paper lists as future work and a self-correction pilot at the paper's batch size, so that others need not repeat them (Section~\ref{sec:negative}).
@@ -412,6 +413,35 @@ Sampler & NFE & Gen.\ PPL $\downarrow$ & dist-3 $\uparrow$ & xs-4 $\downarrow$ &
 \paragraph{What the twins show.} The twin test asks a sharp question: if we keep every temperature of a recipe but skip the round trip, how much of the gain remains? At the released temperature the twin of $\RT{6}$ is the released sampler itself, so refinement accounts for the whole $-14.5\%$ matched-diversity gain. With hot coarse and cool fine levels the answer changes, and this is the one place where part of our gain is not the round trip: the per-level schedule alone, with no round trip at all, already lies well below the global-temperature curve ($-21.0\%$ for the twin of the best recipe, $-11.3\%$ for the twin of the $\tau{=}1.2$ recipe). Heating the coarse levels and cooling the fine ones is itself a better sampler than a single global temperature, a result not reported in the NCM paper. Refinement adds 4--10 points on top ($-25.2\%$ and $-21.4\%$ against the frontier). We therefore report the hot-draft samplers as ``schedule plus round trip'' and attribute to refinement only its increment. On LM1B large the schedule alone does not help: the twin of the hot-draft sampler is far worse at a similar entropy (90.27 vs.\ 63.37, entropy 4.361 vs.\ 4.368), so there the whole gain is the round trip.
 
 \paragraph{Human text.} The human-text test asks a different question: is the round trip a general ``sharpener'' that makes any text more predictable, or does it specifically repair the generator's drafts? Applied to 768 real human openings instead of drafts, refinement does not lower Gen.\ PPL below that of the human text: one round raises it from 8.51 to 9.39, with distinct-3 and cross-sample overlap essentially unchanged (0.772 vs.\ 0.775, 0.141 vs.\ 0.139), and further rounds raise it more (10.35, 12.12). A sharpening operator would have pushed human text to lower perplexity and lower diversity. Instead the round trip leaves real text close to where it is, and the small rise is the generator's own realisation errors when it regenerates the fine levels. The gain on drafts is therefore a repair of something specific to the drafts, the non-canonical coarse codes, not a bias of the procedure that any input would show.
+
+\subsection{Adaptive rounds: spend passes only where the draft drifts}
+\label{sec:adaptive}
+
+\paragraph{Two gates.} Non-canonicality is measured by the same encoder pass that the round trip needs anyway, so it is free to use as a gate. We test two uses of it (Table~\ref{tab:adaptive}, Figure~\ref{fig:adaptive}). \emph{Gated round} ($\ART{k}(\theta)$): run the round from level $k$ only for the samples whose draft the re-encode rewrites more than a share $\theta$ of the level 0--5 codes; the others keep their draft and spend no extra passes. \emph{Early stop} ($\ART{k}{\times}n(\theta)$): repeat up to $n$ rounds, applying the same test to the current text before each round. The reported cost is the mean number of generator passes per sample. The per-round non-canonicality explains why the two gates need different thresholds: drafts are rewritten at a median of 0.76 (TinyStories) and 0.89 (LM1B), but after one round the kept levels \emph{are} the tokenizer's, so the text that comes out is rewritten far less, at a median of 0.44 after $\RT{5}$ and 0.18 after $\RT{6}$ on TinyStories (0.53 after $\RT{6}$ on LM1B), and less again after a second round (0.28 and 0.14). A threshold tuned for drafts therefore never fires a second round; the early-stop thresholds below are set in the range where the second and third rounds actually vary.
+
+\begin{table}[!htb]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Sampler & passes & refined & Gen.\ PPL $\downarrow$ & $\Delta$ & dist-3 $\uparrow$ & xs-4 $\downarrow$ & vs.\ $\tau$ frontier \\
+\midrule
+\tabinput{tables/adaptive.tex}
+\bottomrule
+\end{tabular}
+\caption{Adaptive round-trip refinement, seeds 1--3 ($3\times256$, GPT-2 Large). ``passes'': mean generator passes per sample; ``refined'': share of samples that received at least one round. $\theta$ is the non-canonicality (share of level 0--5 codes the re-encode changes) above which a round is run. The frontier column is the TinyStories temperature curve at the same distinct-3, or the LM1B curve at the same entropy; ``--'' where a sampler is more diverse than any point of the curve.}
+\label{tab:adaptive}
+\end{table}
+
+\begin{figure}[!htb]
+\centering
+\includegraphics[width=0.72\linewidth]{figs/adaptive.pdf}
+\caption{Quality against mean passes per sample on TinyStories. Grey: the fixed schedules of Table~\ref{tab:ts}. Blue squares: one round from level 6, gated by the draft's non-canonicality ($\theta{=}0.80, 0.75, 0.70$ from left to right). Dark diamonds: up to three gated rounds. Gating buys a slightly better curve than choosing a finer fixed restart level; it does not change the picture.}
+\label{fig:adaptive}
+\end{figure}
+
+\paragraph{What the gates buy.} On TinyStories a gated single round sits slightly below the fixed-schedule curve at every budget: $\ART{6}(0.70)$ refines 86\% of stories for 16.1 passes and reaches 13.61, against 13.84 for $\RT{7}$ at 16 passes; $\ART{6}(0.75)$ refines 59\% for 14.5 passes and reaches 14.19, against 14.76 for $\RT{8}$ at 15; and $\ART{6}(0.80)$ refines only 23\% of stories, for 1.4 extra passes, and matches $\RT{9}$ at 14 passes (15.14 vs.\ 15.13). The gated samplers also keep diversity closer to the released sampler (distinct-3 0.740--0.745), because most stories are left untouched. The same holds against the temperature frontier: at matched distinct-3 the gated rounds are 3--11\% better than temperature, the fixed restarts $\RT{9}$--$\RT{7}$ 4--8\%. Early stop over three rounds behaves the same way: $\ART{6}{\times}3(0.50)$ costs 17.2 passes and scores 13.26 against 13.36 for $\RT{6}$ at 17; $\ART{5}{\times}3(0.50)$ costs 20.8 passes and scores 12.24, better than either fixed two-round schedule at 23 passes (12.34, 12.64) and 14.0\% below the frontier against 10--12\%; above 24 passes the gated samplers are slightly worse in raw perplexity than $\RT{5}{\times}2$ and $\RT{5}{\times}3$ but still equal or better at matched diversity, because the rounds they skip are the ones that would have narrowed the text. On LM1B large the gates are neutral: every draft is rewritten heavily, so the single-round gate at $\theta{=}0.80$ refines 71\% of sequences and lands on the fixed curve ($-15.5\%$ at 15.3 passes against $-16.2\%$ for $\RT{7}$ at 16), and the early-stopped three-round samplers trace the $\RT{6}$--$\RT{6}{\times}2$--$\RT{6}{\times}3$ line within two points. The gates are therefore a way to choose a point on the quality--compute curve per sample rather than per corpus, worth 1--2 passes or 0.3--0.6 Gen.\ PPL on TinyStories, and nothing on LM1B. We report them for completeness and because the selector is free; they do not alter the paper's claims.
 
 \subsection{Wall-clock cost}
 \label{sec:cost}

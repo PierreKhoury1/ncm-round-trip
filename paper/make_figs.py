@@ -1,5 +1,6 @@
 """Figures (figs/*.pdf) and LaTeX table bodies (tables/*.tex) from results.json. Missing runs are skipped."""
 import json, os
+import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -26,6 +27,10 @@ def label(v):
             k, n = (p[1:].split("x") + ["1"])[:2]
             name = {"r": "RT", "n": "Resample", "q": "LatentRQ"}[p[0]]
             parts.append(rf"{name}$_{{{k}}}$" + (rf"$\times{n}$" if n != "1" else ""))
+        elif p[0] == "a":  # adaptive: a<k>@<t> or a<k>x<n>@<t>
+            kn, thr = p[1:].split("@")
+            k, n = (kn.split("x") + ["1"])[:2]
+            parts.append(rf"ART$_{{{k}}}$" + (rf"$\times{n}$" if n != "1" else "") + rf"($\theta{{=}}{float(thr):.2f}$)")
         elif p[0] == "d":
             extra.append(rf"draft $\tau{{=}}{p[1:]}$")
         elif p[0] == "b":
@@ -529,4 +534,73 @@ table_heldout()
 table_judge()
 table_mauve()
 table_sudoku()
+
+
+# ---------------- Runs 21-22: adaptive restart and early stop ----------------
+def _nfe(d):
+    return f"{d['nfe']:.1f}" if isinstance(d["nfe"], float) and not float(d["nfe"]).is_integer() else f"{int(d['nfe'])}"
+
+
+def table_adaptive():
+    A, E, LA, LE = (R.get(k, {}) for k in ("p10_adapt_ts", "p11_stop_ts", "p10_adapt_lm1bl", "p11_stop_lm1bl"))
+    if not A or not E:
+        return
+    L = []
+
+    def row(d, v, fr_key="vs_temp_dist3", base_full=None):
+        sd = f"{d['ppl_mean']:.2f}{{\\scriptsize$\\pm${d['ppl_sd']:.2f}}}"
+        vs = pct(d.get("vs_full")) if v != "full" else "--"
+        fr = pct(d.get(fr_key)) if v != "full" else "--"
+        ref = f"{100 * np.mean(d['refined']):.0f}\\%" if d.get("refined") else ("--" if v == "full" else "100\\%")
+        return f"{label(v)} & {_nfe(d)} & {ref} & {sd} & {vs} & {d['dist3_mean']:.3f} & {d['xsamp4_mean']:.3f} & {fr} \\\\"
+
+    L.append("\\multicolumn{8}{l}{\\emph{TinyStories: one round, gated by the draft's non-canonicality}} \\\\")
+    L.append(row(A["full"], "full"))
+    for v in ("r6", "a6@0.70", "a6@0.75", "a6@0.80"):
+        L.append(row(A[v], v))
+    L.append("\\midrule")
+    L.append("\\multicolumn{8}{l}{\\emph{TinyStories: up to three rounds, each gated by the current text's non-canonicality}} \\\\")
+    for v in ("r5x2", "r5x3", "a5x3@0.30", "a5x3@0.40", "a5x3@0.50", "a5x3@0.60", "a6x3@0.40", "a6x3@0.50"):
+        if v in E:
+            L.append(row(E[v], v))
+    L.append("\\midrule")
+    L.append("\\multicolumn{8}{l}{\\emph{LM1B large (FLM protocol; last column at equal entropy)}} \\\\")
+    L.append(row(LA["full"], "full", "vs_temp_ent"))
+    for v in ("r6", "a6@0.80", "a6@0.85"):
+        if v in LA:
+            L.append(row(LA[v], v, "vs_temp_ent"))
+    for v in ("r6x2", "r6x3", "a6x3@0.40", "a6x3@0.50", "a6x3@0.60"):
+        if v in LE:
+            L.append(row(LE[v], v, "vs_temp_ent"))
+    open(os.path.join(HERE, "tables", "adaptive.tex"), "w").write("\n".join(L) + "\n")
+
+
+def adaptive_plot():
+    A, E = R.get("p10_adapt_ts", {}), R.get("p11_stop_ts", {})
+    if not A or not E:
+        return
+    fig, ax = plt.subplots(figsize=(5.2, 3.1))
+    S, M = R["ts_single"], R["ts_more"]
+    fixed = [(S[v]["nfe"], S[v]["ppl_mean"], v) for v in ("full", "r9", "r8", "r7", "r6", "r5", "r4")] + \
+            [(M[v]["nfe"], M[v]["ppl_mean"], v) for v in ("r6x2", "r4+r8", "r5x2", "r3+r6+r9")]
+    fixed.sort()
+    ax.plot([f[0] for f in fixed], [f[1] for f in fixed], "-o", color=C_T, ms=3.5, lw=1.2, label="fixed schedules (Table 1)")
+    for n, p, v in fixed:
+        if v in ("full", "r6", "r5x2", "r3+r6+r9", "r9"):
+            ax.annotate(label(v), (n, p), textcoords="offset points", xytext=(4, 4), fontsize=6.5, color=C_T)
+    one = [(A[v]["nfe"], A[v]["ppl_mean"]) for v in ("a6@0.80", "a6@0.75", "a6@0.70")]
+    ax.plot([x for x, _ in one], [y for _, y in one], "s", color=C_R, ms=4.5, label="one gated round (ART$_6$)")
+    multi = [(E[v]["nfe"], E[v]["ppl_mean"]) for v in ("a6x3@0.50", "a6x3@0.40", "a5x3@0.60", "a5x3@0.50", "a5x3@0.40", "a5x3@0.30")]
+    ax.plot([x for x, _ in multi], [y for _, y in multi], "D", color=C_M, ms=4.5, label="up to three gated rounds")
+    ax.axhline(R["real_ts"]["real"]["ppl_mean"], color="k", lw=0.8, ls=":")
+    ax.text(31.5, R["real_ts"]["real"]["ppl_mean"] + 0.15, "human text", fontsize=7, ha="right")
+    ax.set_xlabel("mean generator passes per sample")
+    ax.set_ylabel("Gen. PPL (GPT-2 Large)")
+    ax.legend(fontsize=7, loc="upper right")
+    fig.tight_layout()
+    fig.savefig(os.path.join(HERE, "figs", "adaptive.pdf")); fig.savefig(os.path.join(HERE, "figs", "adaptive.png"), dpi=130)
+
+
+table_adaptive()
+adaptive_plot()
 print("figs:", sorted(os.listdir(os.path.join(HERE, "figs"))), "tables:", sorted(os.listdir(os.path.join(HERE, "tables"))))

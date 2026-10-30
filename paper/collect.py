@@ -35,9 +35,10 @@ def parse_log(path):
     if not os.path.exists(path):
         return out
     for line in open(path, encoding="utf-8", errors="replace"):
-        m = re.match(r"^(\S+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)", line.strip())
+        m = re.match(r"^(\S+)\s+(\d+(?:\.\d+)?)\s+([\d.]+)\s+([\d.]+)", line.strip())
         if m and m.group(1) != "schedule":
-            out[m.group(1)] = (int(m.group(2)), float(m.group(3)), float(m.group(4)))
+            nfe = float(m.group(2))  # adaptive samplers report the mean passes per sample, a non-integer
+            out[m.group(1)] = (int(nfe) if nfe.is_integer() else nfe, float(m.group(3)), float(m.group(4)))
     return out
 
 
@@ -62,6 +63,10 @@ def add_set(store, name, pkls, logs, kind):
                 d["changed"].append(r["changed"])
             if r.get("canon"):  # run 19: per-sample non-canonicality of the drafts, averaged per seed
                 d.setdefault("canon", []).append(float(np.mean(r["canon"])))
+            if r.get("passes"):  # runs 21-22: adaptive samplers; mean passes and share of samples refined, per seed
+                d.setdefault("nfe_seeds", []).append(float(np.mean(r["passes"])))
+                d.setdefault("refined", []).append(float(np.mean([p > 11 for p in r["passes"]])))
+                d["nfe"] = float(np.mean(d["nfe_seeds"]))
 
 
 def frontier(S, temps, ref_key="dist3"):
@@ -124,6 +129,11 @@ add_set(store, "p6_ts", [P(f"p6_ts_s{s}.pkl") for s in S456], [L("phase6", f"sco
 add_set(store, "p6_lm1bl", [P(f"p6_lm1bl_s{s}.pkl") for s in S456], [L("phase6", f"score_p6_lm1bl_s{s}.log") for s in S456], "raw")
 add_set(store, "p9_canon_ts", [P(f"p9_canon_ts_s{s}.pkl") for s in S3], [L("phase9", f"score_p9_canon_ts_s{s}.log") for s in S3], "text")
 add_set(store, "p9_canon_lm1bl", [P(f"p9_canon_lm1bl_s{s}.pkl") for s in S3], [L("phase9", f"score_p9_canon_lm1bl_s{s}.log") for s in S3], "raw")
+# runs 21-22: adaptive restart (a<k>@<t>: a round only when the draft's non-canonicality exceeds t) and early stop
+add_set(store, "p10_adapt_ts", [P(f"p10_adapt_ts_s{s}.pkl") for s in S3], [L("phase10", f"score_p10_adapt_ts_s{s}.log") for s in S3], "text")
+add_set(store, "p10_adapt_lm1bl", [P(f"p10_adapt_lm1bl_s{s}.pkl") for s in S3], [L("phase10", f"score_p10_adapt_lm1bl_s{s}.log") for s in S3], "raw")
+add_set(store, "p11_stop_ts", [P(f"p11_stop_ts_s{s}.pkl") for s in S3], [L("phase11", f"score_p11_stop_ts_s{s}.log") for s in S3], "text")
+add_set(store, "p11_stop_lm1bl", [P(f"p11_stop_lm1bl_s{s}.pkl") for s in S3], [L("phase11", f"score_p11_stop_lm1bl_s{s}.log") for s in S3], "raw")
 
 # multi-round TinyStories variants are compared against the single-round run's temperature curve (same seeds)
 for v in TS_T:
@@ -175,9 +185,17 @@ if store.get("p9_canon_ts"):  # run 19 (best-of-N by canonicality) on seeds 1-3:
     summarize({"g": store["p9_canon_ts"]})
     frontier(store["p9_canon_ts"], TS_T + HOT, "dist3")
     frontier(store["p9_canon_ts"], TS_T + HOT, "xsamp4")
-for name in ("lm1b_small", "lm1b_large", "lm1b_large_more", "p3_lm1b", "p4_lm1bm", "p4_lm1bl", "p9_canon_lm1bl"):
+for name in ("p10_adapt_ts", "p11_stop_ts"):  # runs 21-22 on seeds 1-3: seed-1-3 temperature curve
+    if store.get(name):
+        for v in TS_T[1:] + HOT:
+            store[name].setdefault(v, store["p3_samplers"][v] if v in store["p3_samplers"] else store["ts_single"][v])
+        summarize({"g": store[name]})
+        frontier(store[name], TS_T + HOT, "dist3")
+        frontier(store[name], TS_T + HOT, "xsamp4")
+for name in ("lm1b_small", "lm1b_large", "lm1b_large_more", "p3_lm1b", "p4_lm1bm", "p4_lm1bl", "p9_canon_lm1bl",
+             "p10_adapt_lm1bl", "p11_stop_lm1bl"):
     if name in store and store[name]:
-        if name in ("lm1b_large_more", "p3_lm1b", "p9_canon_lm1bl"):
+        if name in ("lm1b_large_more", "p3_lm1b", "p9_canon_lm1bl", "p10_adapt_lm1bl", "p11_stop_lm1bl"):
             for v in ("t0.9@1", "t0.85@1", "t0.8@1"):
                 store[name].setdefault(v, store["lm1b_large"][v])
         frontier(store[name], ["full", "t0.9@1", "t0.85@1", "t0.8@1"], "ent")

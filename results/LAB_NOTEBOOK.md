@@ -528,3 +528,24 @@ released: canon 0.859 (range ~0.65-0.97, i.e. nearly every draft heavily rewritt
 rho(canon, gain) +0.09; quintiles draft->refined 76.4->62.0 ... 84.7->65.3. Qwen: b4 +1.4% (worse), b4+r6 -22.8% = r6
 -22.9%. => the per-sample signal is strong where non-canonicality varies across drafts (TinyStories 0.46-0.90), weak
 where it is uniformly high (LM1B). Paper text qualified accordingly ("On TinyStories, ...").
+
+## 19. Runs 21-22: adaptive restart and early stop (boxes 58107822 + 58120258, RTX 4090, 28 Oct, ~$0.45 total)
+
+refine_eval.py gained a<k>@<t> (round from k only for samples whose non-canonicality > t) and a<k>x<n>@<t> (up to n
+rounds, same test before each); nfe = mean passes per sample, per-sample passes and per-round canon stored.
+a6@0 reproduces r6 text for text. Seeds 1-3 x 256, GPT-2 Large, diversity from the pickles (collect.py sets
+p10_adapt_ts / p10_adapt_lm1bl / p11_stop_ts / p11_stop_lm1bl; score logs under gpu_logs/phase10, phase11; run-21
+score logs were lost to a DNS drop during the copy and re-scored on the run-22 box).
+TinyStories, one gated round: a6@0.70 16.1 passes, 86% refined, 13.61 (-15.7%, frontier -11.1%) vs RT7@16 13.84;
+a6@0.75 14.5 passes, 59%, 14.19 (-12.2%, -7.0%) vs RT8@15 14.76; a6@0.80 12.4 passes, 23%, 15.14 (-6.3%, -3.4%) =
+RT9@14 15.13. Gated rounds keep dist-3 at 0.740-0.745. Early stop: a draft-level threshold (0.72+) never fires a
+second round because after one round the coarse levels are canonical: median non-canonicality 0.76 (draft) -> 0.44
+after RT5 / 0.18 after RT6 -> 0.28 / 0.14 after a second round (LM1B 0.89 -> 0.53 -> 0.43). With thresholds 0.3-0.6:
+a6x3@0.50 17.2 passes 13.26 (vs RT6@17 13.36); a5x3@0.50 20.8 passes 12.24, frontier -14.0% (vs RT6x2@23 12.64 /
+RT4+RT8@23 12.34, -10..-12%); a5x3@0.40 24.0 passes 12.02 (-14.2% frontier) vs r5x2@25 11.70 (-12.9%); r5x3@32 11.38.
+LM1B large: neutral. a6@0.80 15.3 passes 67.7 (-15.5%) vs RT7@16 67.1; a6x3@0.60 18.8 -> 61.4, @0.50 21.7 -> 59.9,
+@0.40 24.7 -> 55.7 vs r6x2@23 56.6, r6x3@29 53.3. VERDICT: gating = a slightly better quality/compute curve on
+TinyStories (1-2 passes or 0.3-0.6 PPL at equal cost, diversity preserved), nothing on LM1B; early stop lands on
+the fixed-schedule curve. Paper: Section "Adaptive rounds" (tab:adaptive, fig:adaptive). Zenodo v1 published 30 Oct:
+10.5281/zenodo.23737646 (concept 10.5281/zenodo.23737645). Runs 23 (own-error corruption at batch 2048, 2x A100,
+box 58464181) and 24 (CUDA-graph timing, 4090, box 58464528) launched 30 Oct ~23:20.
