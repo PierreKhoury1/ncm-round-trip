@@ -589,3 +589,20 @@ Ops note: the run-23 watcher died at ALL_DONE with "unexpected EOF while looking
 | OWT valid | 96.68% | 0.6% | 5431 / 8192 |
 
 Verdict: does NOT transfer. 3.3% wrong tokens = ~4 per 128-token row (names, numbers, URLs, rare subwords), which is the WMT14 failure mode: a lossy round trip rewrites the text instead of repairing the codes. Options recorded: (1) bigger generator on LM1B itself (tokenizer exact, train bins on the hub; their large is already ~0.7B params, so "bigger" = 1.2-1.5B, ~£100-150, overfitting risk, hyperparameters guessed); (2) reproduce the unreleased OWT model from config/eval/owt.yaml (32-level tokenizer at ctx 1024, 16-layer 1024-wide generator, 11,440 positions per sample; owt/train_gpt2.bin 18 GB is on the hub; tokenizer recipe unknown; £300+); (3) fine-tune the LM1B tokenizer on OWT BERT rows with train_joint.py's tokenizer loss until token accuracy >= 99.5% (~£5-10), then a bigger generator on OWT (~£100-200). Recommendation: (3). Also noted: `pip install datasets` pulled huggingface-hub 2.4 and broke transformers 4.46; pinned hub back to 0.36.2 (datasets now unusable, not needed). JSON: adaptive/runs/p14_owt_tokenizer_transfer.json.
+
+## 21. Run 25: coarse-only round trip (launched 31 Oct 03:20)
+
+Idea (from the "smarter NCM" discussion, Pierre's "go"): the tokenizer decoder was trained with fine_drop, so it can decode a stack truncated to levels < k. New sampler variants in refine_eval.py: `c<k>` = decode levels < k only, re-encode that text, force levels < k canonical, generate levels >= k once; in a real sampler levels < k are generated once, so the round trip costs no extra generator pass (emulated on a full draft here, npass not increased). `u<k>` = the truncated decode itself, as a diagnostic of how much text the coarse levels carry. Grid: TS seeds 1-3 full,r6,u4,u6,u8,c3..c8,c6+r6,c5+r5,c6x2; LM1B large seeds 1-3 full,r6,u6,c5,c6,c7,c6+r6,c6x2. Box 58486399 (A100 PCIE 40 GB Japan, $0.336/h, cap 2.5 h, guard destroy 06:21), watcher tag p15. Expected if it works: most of RT6's -17/-22% at 11 passes. CPU smoke passed (texts identical across variants on the first sample, which is plausible: fine levels only change details).
+
+### Run 25 result (31 Oct 05:03; box 58490359 A100 Japan; first attempt invalid)
+
+First attempt (tag p15, quarantined in runs/invalid_p15) was invalid: `vq.idx_to_zhats` appends the same tensor it keeps adding to in place, so every entry aliases the full latent and the "truncated" decode was the full decode (u-rows equalled full exactly, c-rows equalled r-rows). Fixed with `trunc_zhat(g, k)` in refine_eval.py (rebuilds the partial sum). Retry tag p16, seeds 1-3, GPT-2 Large Gen PPL, 3-seed means:
+
+| | TS full | u4 | u6 | u8 | c3 | c4 | c5 | c6 | c7 | c8 | c6x2 | r6 | c6+r6 | c5+r5 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| PPL | 16.44 | 179 | 159 | 53.6 | 16.69 | 18.82 | 20.08 | 21.47 | 22.22 | 21.62 | 24.08 | 13.41 | 15.75 | 14.88 |
+| vs full | | +989% | +870% | +226% | +1.5% | +14.5% | +22% | +31% | +35% | +32% | +46% | -18.4% | -4.2% | -9.5% |
+
+LM1B large: full 79.9; u6 184 (+130%); c5 96.8 (+21%); c6 98.3 (+23%); c7 97.6 (+22%); c6x2 99.0 (+24%); r6 63.0 (-21%); c6+r6 79.1 (-1%).
+
+Verdict: clean negative. The coarse levels alone decode to word salad (PPL 159 at k=6 on TS, 184 on LM1B), re-encoding that text gives canonical codes for salad, and forcing them hurts at every k; a full round trip afterwards only partly recovers (-4% vs -18%). The correction signal of round-trip refinement is the finished text of the fine levels projected back onto the coarse levels; it cannot be had before the fine levels exist. The 6 extra passes are the mechanism, not overhead. Written into the paper as the "Coarse-only round trip" row of Table negative. Only p16_coarse_lm1bl_s1.pkl came home (final scp copied one pickle before the box was destroyed; score logs complete under gpu_logs/phase16), so no distinct-3 for these rows; entropy from the logs: c-rows 3.93 vs 3.98 (TS), 4.25 vs 4.34 (LM1B), i.e. slightly less diverse as well as worse. Cost both attempts ~$1.5.

@@ -184,6 +184,20 @@ def encode(toks):
 CANON_L = min(6, K)
 
 
+def trunc_zhat(g, k):
+    """Full-resolution latent built from levels < k only. (vq.idx_to_zhats cannot be used for this: it appends the
+    same tensor it keeps adding to in place, so every entry of its list is the full sum.)"""
+    z = torch.zeros(g.shape[0], levels[-1], vq.embed_dim, device=g.device)
+    acc = 0
+    for li in range(k):
+        e = vq.embeddings[li](g[:, acc:acc + levels[li]])
+        if li != K - 1:
+            e = vq._up_to_full(e, li, levels[-1])
+        z = z + vq._apply_quant_resi(e, li)
+        acc += levels[li]
+    return z
+
+
 def canon_score(src, g):
     """Per-sample share of the level 0..5 codes of stack g that the re-encoded stack src disagrees with."""
     return torch.stack([(s != d).float().mean(1) for s, d in zip(src[:CANON_L], split_codes(g)[:CANON_L])], 1).mean(1)
@@ -251,7 +265,12 @@ def parse(name):
             kn, thr = part[1:].split("@")
             k, n = (kn.split("x") + ["1"])[:2]
             rounds += [(int(k), "a", float(thr))] * int(n)
-        elif part[0] in "rnq":
+        elif part[0] in "rnqcu":
+            # c<k>: coarse-only round trip: decode the stack truncated to levels < k (the decoder was trained with
+            #       fine_drop), re-encode that text, force levels < k canonical, generate levels >= k once. In a real
+            #       sampler levels < k are generated only once, so the round costs no extra generator pass; here it is
+            #       emulated on a full draft and npass is not increased.
+            # u<k>: diagnostic: the truncated decode of levels < k is the output itself (no regeneration).
             k, n = (part[1:].split("x") + ["1"])[:2]
             rounds += [(int(k), part[0], None)] * int(n)
         else:
@@ -339,13 +358,19 @@ for name in a.variants.split(","):
                 src = src0 if i == 0 else split_codes(encode(toks))
             elif mode == "q":
                 src = split_codes(vq.z_to_idx(vq.idx_to_zhats(g, return_zlevels=True)[1][-1]))
+            elif mode in "cu":  # text the tokenizer decodes from levels < k alone, re-encoded
+                toks_tr = pick_tokens(tk.vqvae.decoder(trunc_zhat(g, k)))
+                src = split_codes(encode(toks_tr))
             else:
                 src = split_codes(g)
             if i == 0 and mode != "n":
                 changed += torch.stack([(s != d).float().mean() for s, d in zip(src, split_codes(g))]).cpu() * B
                 nchg += B
-            if mode in "ra":
+            if mode in "rac":
                 canon_rounds[i] += canon_score(src, g).tolist()
+            if mode == "u":
+                toks = toks_tr
+                continue
             if mode == "a":  # adaptive: only the samples whose coarse levels the round trip still rewrites
                 active = (canon_score(src, g) > thr).nonzero().flatten()
                 if active.numel() == 0:
@@ -358,6 +383,8 @@ for name in a.variants.split(","):
             elif guide and mode != "n":
                 toks, g = generate_guided(src, split_codes(g), prefix, temps, k, guide)
                 npass += K - k
+            elif mode == "c":  # emulated on a full draft; a real sampler generates levels < k once, so no extra pass
+                toks, g = generate(src[0], prefix, temps, forced=src, upto=k)
             else:
                 toks, g = generate(src[0], prefix, temps, forced=src, upto=k)
                 npass += K - k
