@@ -1,0 +1,64 @@
+{
+ "lm1b": {
+  "rows": 1024,
+  "token_acc": 0.9986724853515625,
+  "row_exact": 0.8447265625,
+  "codes_used_per_level": [
+   766,
+   3011,
+   5398,
+   6109,
+   6198,
+   5933,
+   5832,
+   6102,
+   5505,
+   5251,
+   5341,
+   6124
+  ],
+  "sec": 50.99410605430603
+ },
+ "owt": {
+  "rows": 1024,
+  "token_acc": 0.9667739868164062,
+  "row_exact": 0.005859375,
+  "codes_used_per_level": [
+   776,
+   2319,
+   4349,
+   5046,
+   5190,
+   4970,
+   5035,
+   5299,
+   4834,
+   4676,
+   4817,
+   5431
+  ],
+  "sec": 52.4803946018219
+ },
+ "owt_examples": [
+  {
+   "orig": "[CLS] tbo profile joined september 2009 germany 1347 posts last edited : 2011 - 03 - 28 20 : 45 : 19 # 1 [CLS] march 27 14 : 00 cest - stream will be on : http : / / www. sc - streams. com / live / 1026 [CLS] low quality / iphone stream : http : / / www. sc - streams. com / live / 1096 [CLS] vods : [CLS] part 1 : [CLS] part 2 : [CLS] part 3 : [CLS] part 4 : [CLS] after the successful showmatch last week ( [CLS] mym. cloud [CLS] tlaf - liquid ` tlo [CLS] mtw. [CLS]",
+   "recon": "[CLS] tbo profile joined september 2009 germany 1347 posts last edited : 2011 - 03 - 28 20 : 45 : 19 # 1 [CLS] march 27 14 : 00 cest - stream will be on : http : / / www. sc - streams. com / live / 1026 [CLS] low quality / iphone stream : http : / / www. sc - streams. com / live / 1096 [CLS] vods : [CLS] part 1 : [CLS] part 2 : 2 part 3 : [CLS] part 4 : [CLS] after the successful showmatch last week ( [CLS] mym. cloud [CLS] tlaf - liquid - tlo [CLS] mtw. [CLS]",
+   "n_wrong": 2
+  },
+  {
+   "orig": "rine [CLS] srsrazerinsolence [CLS] 300 euro [CLS] 150 euro [CLS] 50 euro [CLS] 25 euro [CLS] vods : part 1 : http : / / www. sc - streams. de / vod / 2809 part 2 : http : / / www. sc - streams. de / vod / 2810 part 3 : http : / / www. sc - streams. de / vod / 2811 part 4 : http : / / www. sc - streams. de / vod / 2812 after the successful showmatch last week ( http : / / www. teamliquid. net / [CLS]",
+   "recon": "[CLS]news srsrazevasolence [CLS] 300 euro euro 150 euro 50 50 euro + 25 euro [CLS] vods : part 1 : http : / / www. sc - streams. de / vod / 2809 part 2 : http : / / www. sc - streams. de / vod / 2480 part 3 : http : / / www. sc - streams. de / vod / 2811 part 4 : http : / / www. sc - hunt. de / vod / 2812 after the successful showmatch last week ( http : / / www. teamliquid. net / [CLS]",
+   "n_wrong": 8
+  },
+  {
+   "orig": "forum / viewmessage. php? topic _ id = 202161 ), i ' m proud to announce the heat invitational # 1 featuring : 300 euro150 euro50 euro25 euro [CLS] the semifinals and the final will all be best of 5. [CLS] the game for third place will either be bo1 or bo3 depending on the time ( we really don ' t want to miss tsl ) [CLS] the cast will be provided onsite by soe on - site who will be joined by the players as co - casters. [CLS] stream quality will be higher and the production will be more extensive than the one [CLS]",
+   "recon": "forum / viewmessage. php? topic _ id = ss61 ), i ' m proud to announce the heat invitational # 1 featuring : 300 euro150 euro50 euro25 euro [CLS] the semifinals and the final will all be best of 5. [CLS] the game for third place will either be bo1 or bo3 depending on the time ( we really don ' t want to miss tsl ) [CLS] the cast will be provided onsite by soe on - site who will be joined by the players as co - casters. [CLS] stream quality will be higher and the production will be more extensive than the one [CLS]",
+   "n_wrong": 1
+  },
+  {
+   "orig": "of the showmatch. [CLS] we have 2 internet connections : one for the players and one for the caster to ensure everything runs smooth. [CLS] screencap from last week [CLS] photograph from last week [CLS] ( as you can see they didn ' t wear hearing protection, that was because the showmatch was not casted on - site. ) [CLS] i hope you will enjoy the event : - ) [CLS] topic of last weeks showmatch : [CLS] edit semifinal matches and maps : [CLS] the semifinals and the final will all be best of 5. [CLS] the game for third place will either be bo1 or bo3 depending on the [CLS]",
+   "recon": "[CLS] the showmatch. [CLS] we have 2 internet connections : one for the players and one for the caster to ensure everything runs smooth. [CLS] screencap from last week photograph photograph from last week \" ( as you can see they didn ' t wear hearing protection, that was because the showmatch was not casted on - site. ) [CLS] i hope you will enjoy the event : - ) topic topic of last weeks showmatch : [CLS] edit semifinal matches and maps : \" the semifinals and the final will all be best of 5. [CLS] the game for third place will either be bo1 or bo3 depending on the [CLS]",
+   "n_wrong": 5
+  }
+ ]
+}
