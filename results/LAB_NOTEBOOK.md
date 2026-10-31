@@ -563,3 +563,18 @@ ms per sample, TinyStories model, released sampler / RT6 (median of 7, warm-up e
 | torch.compile reduce-overhead (fusion + CUDA graphs) | 4.37 | 9.08 | 5.74 | 12.04 |
 
 Reading: at batch 128 fusion saves 13%, CUDA graphs add nothing (GPU-bound). At batch 8 CUDA graphs cut 59% off both samplers; RT6 with graphs (12.0 ms) beats the eager released sampler (14.0 ms). RT6 / released stays 2.07-2.11x in every mode except fusion-only at batch 8 (1.75x). Compile cost: 114-144 s for the first batch size per mode plus 16-28 s of graph capture, 22 shapes. Written into the paper as Table tab:graphs + "Compilation and CUDA graphs" paragraph in sec:cost; limitations sentence updated. JSON at results/p13_timing_graph.json, log under gpu_logs/phase13.
+
+### Run 23 result (31 Oct, 02:01; box 58464181, 2x A100 SXM4, 2 h 40 min, ~$5.3)
+
+Own-error corruption at the paper's batch size. 200 steps, batch 2,048 (accum 64), lr 1e-4, uniform corruption 0.75->0.25 across input levels, own-guess share 0 / 0.5 / 1.0 of the corrupted positions. Own-guess error rate vs the tokenizer's code: 0.47-0.48. Final CE: ctrl 1.327, mix50 1.373, mix100 1.404 (released ~1.33). Evals seeds 4-6, 256 stories, GPT-2 Large, each arm with its own temperature points.
+
+| arm | full | d3 | t0.9 | d3 | t0.8 | d3 | r6 | d3 | r5x2 | d3 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| released | 16.32 | 0.743 | 14.33 | 0.724 | 13.65 | 0.712 | 13.30 | 0.734 | 11.88 | 0.722 |
+| ctrl | 16.83 | 0.751 | 14.78 | 0.727 | 13.58 | 0.713 | 13.51 | 0.741 | 12.01 | 0.726 |
+| mix50 | 20.88 | 0.789 | 16.86 | 0.763 | 14.60 | 0.739 | 15.37 | 0.771 | 13.47 | 0.757 |
+| mix100 | 38.18 | 0.845 | 24.39 | 0.807 | 18.13 | 0.775 | 24.39 | 0.827 | 20.10 | 0.818 |
+
+Reading. Raw PPL: same dose-dependent damage as at batch 128 (20.9 / 38.2 vs 16.8; batch 128 gave 21.8 / 40.2). But the corrupted models are far more diverse (distinct-3 0.79 / 0.85 vs 0.75), i.e. flatter samplers. Matched for diversity against the released model's per-level temperature schedules on the same seeds (run 16 curve): mix50 t0.9 16.86 @0.763 vs t1.15@1+t0.85@6 17.32 / t1.2@1+t1@5+t0.8@6 17.10; mix50 full 20.88 @0.789 vs t1.4@1+t0.8@6 20.47 @0.793; mix100 t0.8 18.13 @0.775 vs t1.25@1+t0.8@6 18.02 @0.772 / t1.3@1+t1@5+t0.8@6 17.99 @0.778; mix100 t0.9 24.39 @0.807 vs t1.3@1+t0.8@8 23.65 @0.797. All within +-3%: a tie. Against the GLOBAL temperature curve the corrupted models look 6-25% better, which is only the known per-level-schedule effect. Round trip on top: mix50 r6 15.37 @0.771 vs d1.3+t0.8@6+r6 15.88 @0.774 (17 passes); mix50 r5x2 13.47 @0.757 vs d1.3+t0.8@6+r5x2 12.96 @0.754 (25 passes): tie. Verdict: training on own guesses makes the sampler hotter, not better; same verdict as the batch-2,048 self-correction pilot (run 17). Mechanism stays supported correlationally, and the two direct training-side tests at the paper's batch size both tie. Written into the paper: Table negative row, setup paragraph, contribution bullet, exposure-bias related work, two limitation sentences. Logs under gpu_logs/phase12; collect.py sets p12_released/ctrl/mix50/mix100 (frontier vs released global curve); checkpoints adaptive/ckpt/p12_*.pt (356 MB each).
+
+Ops note: the run-23 watcher died at ALL_DONE with "unexpected EOF while looking for matching quote" because I edited watch_box.sh while that watcher was running (bash reads scripts lazily). Results copied by hand, box destroyed 02:07 (~5 min extra billing). Rule: never edit a bash script that is running; copy to a new file name instead.

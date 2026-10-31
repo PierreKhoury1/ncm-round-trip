@@ -134,6 +134,9 @@ add_set(store, "p10_adapt_ts", [P(f"p10_adapt_ts_s{s}.pkl") for s in S3], [L("ph
 add_set(store, "p10_adapt_lm1bl", [P(f"p10_adapt_lm1bl_s{s}.pkl") for s in S3], [L("phase10", f"score_p10_adapt_lm1bl_s{s}.log") for s in S3], "raw")
 add_set(store, "p11_stop_ts", [P(f"p11_stop_ts_s{s}.pkl") for s in S3], [L("phase11", f"score_p11_stop_ts_s{s}.log") for s in S3], "text")
 add_set(store, "p11_stop_lm1bl", [P(f"p11_stop_lm1bl_s{s}.pkl") for s in S3], [L("phase11", f"score_p11_stop_lm1bl_s{s}.log") for s in S3], "raw")
+# run 23: own-error corruption at the paper's batch size (200 steps, batch 2,048), seeds 4-6, each arm with its own curve
+for g in ("released", "ctrl", "mix50", "mix100"):
+    add_set(store, f"p12_{g}", [P(f"p12_{g}_s{s}.pkl") for s in S456], [L("phase12", f"score_p12_{g}_s{s}.log") for s in S456], "text")
 
 # multi-round TinyStories variants are compared against the single-round run's temperature curve (same seeds)
 for v in TS_T:
@@ -173,6 +176,13 @@ if store.get("p6_ts"):  # run 16 carries its own temperature curve (tau 0.6..1.3
     frontier(store["p6_ts"], P6T, "xsamp4")
 if store.get("p6_lm1bl"):
     frontier(store["p6_lm1bl"], ["full", "t1.1@1", "t1.2@1"] + [v for v in ("t0.8@1", "t0.9@1") if v in store["p6_lm1bl"]], "ent")
+for g in ("released", "ctrl", "mix50", "mix100"):  # run 23: each arm against the RELEASED model's temperature curve (same seeds)
+    if store.get(f"p12_{g}") and store.get("p12_released"):
+        for v in ("t0.8@1", "t0.9@1", "t1.1@1"):
+            store[f"p12_{g}"].setdefault(f"rel_{v}", store["p12_released"][v])
+        store[f"p12_{g}"].setdefault("rel_full", store["p12_released"]["full"])
+        summarize({"x": store[f"p12_{g}"]})
+        frontier(store[f"p12_{g}"], ["rel_full", "rel_t0.8@1", "rel_t0.9@1", "rel_t1.1@1"], "dist3")
 if store.get("p5_guide"):  # guidance on seeds 1-3: seed-1-3 temperature curve
     for v in TS_T[1:] + HOT:
         store["p5_guide"].setdefault(v, store["p3_samplers"][v] if v in store["p3_samplers"] else store["ts_single"][v])
