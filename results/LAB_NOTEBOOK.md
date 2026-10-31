@@ -549,3 +549,17 @@ TinyStories (1-2 passes or 0.3-0.6 PPL at equal cost, diversity preserved), noth
 the fixed-schedule curve. Paper: Section "Adaptive rounds" (tab:adaptive, fig:adaptive). Zenodo v1 published 30 Oct:
 10.5281/zenodo.23737646 (concept 10.5281/zenodo.23737645). Runs 23 (own-error corruption at batch 2048, 2x A100,
 box 58464181) and 24 (CUDA-graph timing, 4090, box 58464528) launched 30 Oct ~23:20.
+
+**31 Oct, 00:40.** Run 24 first attempt (box 58464528, RTX 4090 Korea) lost: the box went unreachable at 00:16 after 47 min without ALL_DONE, nothing copied, instance destroyed by the watcher (~$0.35). Two fixes before the retry: `timing_graph.py` now saves the JSON after every row, raises `torch._dynamo.config.cache_size_limit` to 64 (11 level shapes x 2 batch sizes = 22 graphs per mode; the default 8 would silently fall back to eager) and gives each mode a 20 min budget via SIGALRM; `watch_box.sh` now copies `/root/logs/*` and any `*<tag>*.json` home on every poll. Retry on box 58470599 (RTX 4090 Texas, $0.415/h, cap 75 min).
+
+### Run 24 result (31 Oct, 00:42; box 58470599 RTX 4090 Texas, driver 595.99, PyTorch 2.5.1, 10 min of GPU)
+
+ms per sample, TinyStories model, released sampler / RT6 (median of 7, warm-up excluded, decode included; sampling + tokenizer eager in all modes):
+
+| generator pass | batch 128 released | batch 128 RT6 | batch 8 released | batch 8 RT6 |
+|---|---|---|---|---|
+| eager (as released) | 5.02 | 10.39 | 14.02 | 29.54 |
+| torch.compile default (fusion) | 4.37 | 9.06 | 10.08 | 17.59 |
+| torch.compile reduce-overhead (fusion + CUDA graphs) | 4.37 | 9.08 | 5.74 | 12.04 |
+
+Reading: at batch 128 fusion saves 13%, CUDA graphs add nothing (GPU-bound). At batch 8 CUDA graphs cut 59% off both samplers; RT6 with graphs (12.0 ms) beats the eager released sampler (14.0 ms). RT6 / released stays 2.07-2.11x in every mode except fusion-only at batch 8 (1.75x). Compile cost: 114-144 s for the first batch size per mode plus 16-28 s of graph capture, 22 shapes. Written into the paper as Table tab:graphs + "Compilation and CUDA graphs" paragraph in sec:cost; limitations sentence updated. JSON at results/p13_timing_graph.json, log under gpu_logs/phase13.

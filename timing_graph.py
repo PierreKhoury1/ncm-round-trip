@@ -8,8 +8,13 @@ Sampling (sort / multinomial) and the tokenizer stay eager in every mode. Batch 
 the latency regime where launch overhead matters most. Each (mode, batch, sampler) is timed over --reps runs after one
 warm-up, CUDA-synchronised. Output: one JSON with ms per sample and per pass.
 """
-import argparse, json, os, sys, time
+import argparse, json, os, signal, sys, time
 import torch
+import torch._dynamo
+# every level of the residual VQ has its own input shape: 11 levels x 2 batch sizes = 22 distinct graphs per mode.
+# the default recompile cache (8) would silently fall back to eager after the 8th shape and time nothing new.
+torch._dynamo.config.cache_size_limit = 64
+torch._dynamo.config.accumulated_cache_size_limit = 256
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -26,6 +31,7 @@ ap.add_argument("--reps", type=int, default=5)
 ap.add_argument("--k", type=int, default=6)
 ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
 ap.add_argument("--out", default="round_trip/runs/timing_graph.json")
+ap.add_argument("--mode_budget", type=int, default=1200, help="seconds allowed per mode (compile + capture + timing); 0 = none")
 a = ap.parse_args()
 os.chdir(ROOT)
 dev = torch.device(a.device)
@@ -126,29 +132,57 @@ def run(B, rt):
 
 
 results = []
+os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+
+
+def save():  # after every row, so a box that dies mid-run still leaves the finished rows behind
+    json.dump({"device": torch.cuda.get_device_name(0) if dev.type == "cuda" else "cpu", "torch": torch.__version__,
+               "k": a.k, "reps": a.reps, "rows": results}, open(a.out, "w"), indent=1)
+
+
+class ModeBudget(Exception):
+    pass
+
+
+def _alarm(signum, frame):
+    raise ModeBudget()
+
+
+T_START = time.time()
 for mode in a.modes.split(","):
+    t_mode = time.time()
+    if a.mode_budget and hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, _alarm); signal.alarm(a.mode_budget)
     try:
         set_mode(mode)
         for B in (int(b) for b in a.batches.split(",")):
             for name, rt in (("released", False), (f"RT{a.k}", True)):
-                run(B, rt)  # warm-up (compiles / captures on the first call)
+                print(f"[{time.time() - T_START:7.1f}s] {mode} B={B} {name}: warm-up", flush=True)
+                w = [run(B, rt)]  # warm-up (compiles / captures on the first call)
                 if mode != "eager":
-                    run(B, rt)  # second warm-up: reduce-overhead records graphs on the 2nd-3rd call
-                    run(B, rt)
+                    w.append(run(B, rt))  # reduce-overhead records graphs on the 2nd-3rd call
+                    w.append(run(B, rt))
+                print(f"[{time.time() - T_START:7.1f}s] {mode} B={B} {name}: warm-up secs {[round(x, 2) for x in w]}", flush=True)
                 ts = [run(B, rt) for _ in range(a.reps)]
                 passes = (K - 1) + ((K - a.k) if rt else 0)
                 med = sorted(ts)[len(ts) // 2]
                 row = {"mode": mode, "batch": B, "sampler": name, "passes": passes, "sec_median": med,
                        "ms_per_sample": 1000 * med / B, "ms_per_pass_per_sample": 1000 * med / B / passes,
-                       "sec_all": ts}
-                results.append(row)
-                print(json.dumps({k: (round(v, 4) if isinstance(v, float) else v) for k, v in row.items() if k != "sec_all"}), flush=True)
+                       "sec_all": ts, "warmup_sec": w}
+                results.append(row); save()
+                print(json.dumps({k: (round(v, 4) if isinstance(v, float) else v) for k, v in row.items() if k not in ("sec_all", "warmup_sec")}), flush=True)
+    except ModeBudget:
+        msg = f"mode budget {a.mode_budget}s exceeded after {time.time() - t_mode:.0f}s"
+        print(json.dumps({"mode": mode, "error": msg}), flush=True)
+        results.append({"mode": mode, "error": msg}); save()
+        torch._dynamo.reset()
     except Exception as e:  # a compile failure must not kill the eager rows
         print(json.dumps({"mode": mode, "error": repr(e)[:300]}), flush=True)
-        results.append({"mode": mode, "error": repr(e)[:300]})
+        results.append({"mode": mode, "error": repr(e)[:300]}); save()
         torch._dynamo.reset()
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
 
-os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
-json.dump({"device": torch.cuda.get_device_name(0) if dev.type == "cuda" else "cpu", "torch": torch.__version__,
-           "k": a.k, "reps": a.reps, "rows": results}, open(a.out, "w"), indent=1)
+save()
 print("wrote", a.out)

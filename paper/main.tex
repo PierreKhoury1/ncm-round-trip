@@ -470,6 +470,25 @@ Sampler & NFE & ms / sample & generator (s) & tokenizer (s) & time & NFE \\
 \label{fig:timing}
 \end{figure}
 
+\paragraph{Compilation and CUDA graphs.} The times above are the authors' code as released, in eager PyTorch, and a reader may ask how much of the cost of the extra passes is kernel-launch overhead that compilation would remove. Table~\ref{tab:graphs} re-times the released sampler and $\RT{6}$ on the TinyStories model with the per-level generator pass compiled by \texttt{torch.compile}, once in its default mode (kernel fusion) and once in \texttt{reduce-overhead} mode (fusion plus CUDA-graph replay); sampling and the tokenizer stay eager, and each of the 11 level shapes is compiled once. At the paper's batch of 128 fusion saves 13\% and CUDA graphs add nothing on top of it: the GPU is busy, and the passes are real work. At batch 8, the latency regime, launch overhead is most of the eager time and CUDA graphs remove 59\% of it for both samplers, so that the refined sampler with graphs ($12.0$\,ms per story) is faster than the released sampler as shipped ($14.0$\,ms). The ratio between the two samplers stays at $2.1\times$ under graphs at both batch sizes (fusion alone narrows it to $1.75\times$ at batch 8, where the smaller released passes gain more from fusion): compilation lowers both bars by the same factor and leaves the trade-off of this section where it is, while being a free win for anyone deploying either sampler at small batch.
+
+\begin{table}[!htb]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrr}
+\toprule
+ & \multicolumn{2}{c}{ms / sample} & & \multicolumn{2}{c}{vs.\ eager released} \\
+\cmidrule(lr){2-3}\cmidrule(lr){5-6}
+Generator pass & released & $\RT{6}$ & $\RT{6}$ / released & released & $\RT{6}$ \\
+\midrule
+\tabinput{tables/graphs.tex}
+\bottomrule
+\end{tabular}
+\caption{The same two samplers with the per-level generator pass compiled (TinyStories model, one RTX 4090, PyTorch 2.5, median of 7 timed runs after warm-up, CUDA-synchronised, decoding included). Fusion helps at both batch sizes; CUDA graphs matter only at small batch, where they make $\RT{6}$ cheaper than the eager released sampler. The ratio between the samplers is unchanged.}
+\label{tab:graphs}
+\end{table}
+
 \subsection{Does it transfer to images?}
 \label{sec:var}
 
@@ -545,7 +564,7 @@ Generator (11 passes, $\tau{=}1$) & batch & Gen.\ PPL $\downarrow$ & dist-3 $\up
 
 \section{Limitations}
 
-Our evaluation relies on Gen.\ PPL under GPT-2 Large (checked against Qwen2.5-7B), simple diversity statistics, MAUVE and a single 7B LLM judge with a strong position bias that we average out; we did not run a human evaluation, and at equal Gen.\ PPL the judge does not distinguish refinement from a lower temperature. All models are around 100M parameters with 128-token sequences; the authors list an OpenWebText checkpoint, which would be the only model of long general text, but its weights were not on the hub at the time of writing, so we could not test it. Refinement costs 1.3--2.6$\times$ the generator passes, 1.5--3.3$\times$ the generator FLOPs and 1.9--3.8$\times$ the measured wall-clock. It fails when the tokenizer round trip is lossy (WMT14), and it does not transfer to the image model we tried (VAR-d16, FID-10k only). Our reproduction of the released TinyStories sampler is 5\% above the paper's number, and all relative claims are against our reproduction. The train--test mismatch is our explanation of the gain, supported by the canonicality correlations and the ablations but not tested causally; the direct test, a generator trained on its own sampled stacks, is the self-correction pilot of Section~\ref{sec:negative}, which tied with its control. Restart levels and hot-draft temperatures were chosen on the same three seeds we report, from small grids. Most fine-tuning baselines were limited to batch 64--128, and a 200-step pilot at batch 2{,}048 showed that the control then no longer drifts, so the earlier training-side negative results may partly reflect the small batches, with the exception of the diversity argument against distillation and the self-correction pilot itself.
+Our evaluation relies on Gen.\ PPL under GPT-2 Large (checked against Qwen2.5-7B), simple diversity statistics, MAUVE and a single 7B LLM judge with a strong position bias that we average out; we did not run a human evaluation, and at equal Gen.\ PPL the judge does not distinguish refinement from a lower temperature. All models are around 100M parameters with 128-token sequences; the authors list an OpenWebText checkpoint, which would be the only model of long general text, but its weights were not on the hub at the time of writing, so we could not test it. Refinement costs 1.3--2.6$\times$ the generator passes, 1.5--3.3$\times$ the generator FLOPs and 1.9--3.8$\times$ the measured wall-clock, a ratio that compilation and CUDA graphs do not change (Table~\ref{tab:graphs}). It fails when the tokenizer round trip is lossy (WMT14), and it does not transfer to the image model we tried (VAR-d16, FID-10k only). Our reproduction of the released TinyStories sampler is 5\% above the paper's number, and all relative claims are against our reproduction. The train--test mismatch is our explanation of the gain, supported by the canonicality correlations and the ablations but not tested causally; the direct test, a generator trained on its own sampled stacks, is the self-correction pilot of Section~\ref{sec:negative}, which tied with its control. Restart levels and hot-draft temperatures were chosen on the same three seeds we report, from small grids. Most fine-tuning baselines were limited to batch 64--128, and a 200-step pilot at batch 2{,}048 showed that the control then no longer drifts, so the earlier training-side negative results may partly reflect the small batches, with the exception of the diversity argument against distillation and the self-correction pilot itself.
 
 \section{Conclusion}
 

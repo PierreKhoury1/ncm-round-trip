@@ -1,0 +1,9 @@
+\multicolumn{6}{l}{\emph{batch 128}} \\
+eager (as released) & 5.02 & 10.39 & 2.07$\times$ & 1.00$\times$ & 2.07$\times$ \\
+compiled, fusion only & 4.37 & 9.06 & 2.08$\times$ & 0.87$\times$ & 1.81$\times$ \\
+compiled + CUDA graphs & 4.37 & 9.08 & 2.08$\times$ & 0.87$\times$ & 1.81$\times$ \\
+\midrule
+\multicolumn{6}{l}{\emph{batch 8}} \\
+eager (as released) & 14.02 & 29.54 & 2.11$\times$ & 1.00$\times$ & 2.11$\times$ \\
+compiled, fusion only & 10.08 & 17.59 & 1.75$\times$ & 0.72$\times$ & 1.25$\times$ \\
+compiled + CUDA graphs & 5.74 & 12.04 & 2.10$\times$ & 0.41$\times$ & 0.86$\times$ \\
